@@ -30,6 +30,10 @@ export const configSchema = z.object({
   // backends that accept them.
   LLM_SEND_SEED: z.enum(['true', 'false']).default('false'),
   LLM_SEND_REASONING_EFFORT: z.enum(['true', 'false']).default('false'),
+  // Prompt caching for Claude models: the system message and each stable prefix a caller marked are sent as cache breakpoints
+  // (cache_control). Off by default, because it only helps if the gateway passes the field through; a request can still ask for it
+  // itself (promptCache), so a probe can check that without turning it on for everyone.
+  LLM_PROMPT_CACHE: z.enum(['true', 'false']).default('false'),
   // Comma-separated glob patterns (`*`, `?`, case-insensitive) of model names that are hidden from every model
   // picker and refused at job submit/preview/resubmit/retry: models that fail the request contract, persona/agent
   // presets that inject their own prompt, and retired aliases. Empty by default.
@@ -53,6 +57,13 @@ export const configSchema = z.object({
   // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
   KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
+  // The Study phase (ingestion's /study): every SURVEY job, and every BASELINE job whose user has a model connection, reads its document
+  // once before Analyze and captions its figures with the Study's orientation; a SURVEY job also gives the Study to /level instead of the
+  // primer and /level's own background study. 'false' is the operator's switch back to the old path if the Study misbehaves in production.
+  STUDY_PHASE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   // The pre-flight cost forecast (pipeline/token-estimate.ts). LLM_MODEL_PRICES is a JSON object of model id ("*" for any other) to
   // {"inputPerMTok": n, "outputPerMTok": n}, US dollars per million tokens; without a price for the model the wizard shows tokens only.
   // COST_CONFIRM_TOKENS: a run forecast above this many tokens (input + output, likely case) asks the user to confirm before Start; 0 never asks.

@@ -263,3 +263,36 @@ def test_notice_accepts_what_the_publisher_sends_and_rejects_free_text_shapes() 
     _assert_invalid("Notice", {**sent, "facts": {"text": "x" * 41}})
     _assert_invalid("Notice", {**sent, "facts": {"doc": {"a": 1}}})
     _assert_invalid("Notice", {**sent, "extra": 1})
+
+
+def test_a_model_progress_frame_the_emitter_publishes_conforms() -> None:
+    from app.leveling.live_emitter import PROGRESS_LANE, LiveEmitter
+
+    class Redis:
+        def __init__(self) -> None:
+            self.published: list[str] = []
+            self.seq = 0
+
+        def incr(self, name):  # noqa: ANN001, ANN201
+            self.seq += 1
+            return self.seq
+
+        def expire(self, name, time):  # noqa: ANN001, ANN201
+            return True
+
+        def hset(self, name, key, value):  # noqa: ANN001, ANN201
+            return 1
+
+        def publish(self, channel, message):  # noqa: ANN001, ANN201
+            self.published.append(message)
+
+    redis = Redis()
+    emitter = LiveEmitter(redis, "job-1")
+    emitter.model_progress(prompt="score_requirements_for_document.v6@abc", stage="score_requirements_for_document", elapsed_s=250.4, tokens=9800)
+    emitter.model_progress(prompt="study_document.v3@def", stage="study_document_window", elapsed_s=12.0, tokens=None)
+    frames = [json.loads(m) for m in redis.published]
+    assert [f["lane"] for f in frames] == [PROGRESS_LANE, PROGRESS_LANE]
+    for frame in frames:
+        _assert_valid("LiveFrame", frame)
+    _assert_invalid("LiveFrame", {**frames[0], "lane": -2})
+    _assert_invalid("LiveFrame", {**frames[0], "tokens": -1})

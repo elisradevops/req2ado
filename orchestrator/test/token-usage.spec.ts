@@ -94,3 +94,36 @@ describe('LlmController /chat token ledger', () => {
     expect(record).not.toHaveBeenCalled();
   });
 });
+
+describe('LlmController /chat/stream token ledger', () => {
+  const messages = [{ role: 'user' as const, content: 'hi' }];
+  const streamRes = () => ({ setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), on: jest.fn(), status: jest.fn() });
+  const build = (chunks: unknown[]) => {
+    const record = jest.fn().mockResolvedValue(undefined);
+    async function* stream() {
+      for (const chunk of chunks) yield chunk;
+    }
+    const client = { streamChat: jest.fn().mockReturnValue(stream()), chatModel: 'default-model' };
+    const controller = new LlmController({ getClientFor: jest.fn().mockResolvedValue(client) } as any, { record } as any);
+    return { controller, record };
+  };
+
+  it('records a streamed call under the job and stage named in the headers, with the usage of its last chunk', async () => {
+    const usage = { promptTokens: 10, completionTokens: 5 };
+    const { controller, record } = build([{ content: '{}' }, { finishReason: 'stop', usage }]);
+    await controller.chatStream({ messages, model: 'm1', includeDone: true }, streamRes() as any, 'user-1', 'job-1', 'score_requirements_for_document');
+    expect(record).toHaveBeenCalledWith({ jobId: 'job-1', stage: 'score_requirements_for_document', model: 'm1', usage });
+  });
+
+  it('under a router, records the streamed tokens under the routed model', async () => {
+    const { controller, record } = build([{ content: '{}' }, { finishReason: 'stop', routing: { model: 'OpenAI/gpt-5.4' } }]);
+    await controller.chatStream({ messages, model: 'Auto' }, streamRes() as any, 'user-1', 'job-1', 's');
+    expect(record).toHaveBeenCalledWith({ jobId: 'job-1', stage: 's', model: 'OpenAI/gpt-5.4' });
+  });
+
+  it('records nothing for a streamed call that names no job', async () => {
+    const { controller, record } = build([{ content: '{}' }, { finishReason: 'stop' }]);
+    await controller.chatStream({ messages }, streamRes() as any, 'user-1');
+    expect(record).not.toHaveBeenCalled();
+  });
+});

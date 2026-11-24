@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
-import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmRouting, LlmStreamChunk } from './llm-client.interface';
-import { usageOf } from './token-usage';
+import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmRouting, LlmStreamChunk, LlmUsage } from './llm-client.interface';
+import { usageOf, type RawUsage } from './token-usage';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
@@ -30,6 +30,25 @@ import {
 } from './upstream-negotiation';
 
 /** Characters of text in a message list (a length for failure logs, never content). */
+const EPHEMERAL = { type: 'ephemeral' } as const;
+
+/** The messages as sent upstream. With `cache` (a Claude model, caching on), the system message and each part its caller marked carry a
+ * cache breakpoint, as text parts; otherwise every message is the plain string it always was. `parts` itself is never sent. */
+function outbound(messages: ChatMessage[], cache: boolean): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return messages.map(({ parts, ...message }) => {
+    if (!cache) return message as OpenAI.Chat.ChatCompletionMessageParam;
+    if (parts) {
+      const content = parts.map((part) => ({ type: 'text' as const, text: part.text, ...(part.cache ? { cache_control: EPHEMERAL } : {}) }));
+      return { ...message, content } as unknown as OpenAI.Chat.ChatCompletionMessageParam;
+    }
+    if (message.role === 'system' && typeof message.content === 'string' && message.content) {
+      // cache_control is not in the OpenAI SDK's types: it is the Anthropic field the gateway passes on, so the cast is deliberate.
+      return { ...message, content: [{ type: 'text', text: message.content, cache_control: EPHEMERAL }] } as unknown as OpenAI.Chat.ChatCompletionMessageParam;
+    }
+    return message as OpenAI.Chat.ChatCompletionMessageParam;
+  });
+}
+
 function messageChars(messages: readonly { content?: unknown }[]): number {
   return messages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0);
 }
@@ -67,6 +86,9 @@ const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
   'presence_penalty',
   'frequency_penalty',
 ]);
+// A stream also asks for its token usage (so a streamed call reaches the job's token ledger); an upstream that rejects that is
+// streamed without it.
+const STREAM_DROPPABLE: ReadonlySet<string> = new Set([...CHAT_DROPPABLE, 'stream_options']);
 const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed', 'options', 'reasoning_effort']);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
@@ -135,6 +157,8 @@ export interface OpenWebUiClientConfig {
    * Azure-backed models via LiteLLM reject it with a 400. Set true only for
    * Ollama/compatible backends that accept it. */
   LLM_SEND_SEED: boolean;
+  // Prompt caching for Claude models (see outbound()): off unless set; a request's own promptCache wins.
+  LLM_PROMPT_CACHE?: boolean;
   /** When false (default), reasoning_effort is never sent in chat/vision requests.
    * Azure-backed models via LiteLLM reject it with a 400. Set true only for
    * Ollama/compatible backends that support it. */
@@ -322,7 +346,7 @@ export class OpenWebUiClient implements LlmClient {
     const studyCall = opts?.budgetKind === 'study';
     const buildParams = (a: Adaptation) => ({
       model: chatModel,
-      messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: outbound(outboundMessages, this.cacheFor(chatModel, opts)),
       // A temperature the upstream demanded (learned earlier, or on this call's previous attempt)
       // wins over the caller's. A caller that sent none only gets one once an attempt has failed
       // over it, so a learned requirement never leaks into calls that never set a temperature.
@@ -520,6 +544,12 @@ export class OpenWebUiClient implements LlmClient {
     }
   }
 
+  /** Whether this call carries prompt-cache breakpoints: only for a Claude model (another model may reject the field), when the request or
+   * the LLM_PROMPT_CACHE setting asks for it. */
+  private cacheFor(model: string, opts?: LlmChatOptions): boolean {
+    return (opts?.promptCache ?? this.config.LLM_PROMPT_CACHE ?? false) && /claude/i.test(model);
+  }
+
   async *streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
     // Same Ollama-passthrough-options construction as chat() above -- see
@@ -534,8 +564,9 @@ export class OpenWebUiClient implements LlmClient {
     const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
     const buildParams = (a: Adaptation) => ({
       model: chatModel,
-      messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: outbound(outboundMessages, this.cacheFor(chatModel, opts)),
       stream: true as const,
+      ...(!a.dropped.has('stream_options') ? { stream_options: { include_usage: true } } : {}),
       ...(chatTemperature(opts?.temperature, a) !== undefined ? { temperature: chatTemperature(opts?.temperature, a) } : {}),
       // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment; left out once an upstream rejected it.
       ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts?.seed !== undefined ? { seed: opts.seed } : {}),
@@ -553,11 +584,16 @@ export class OpenWebUiClient implements LlmClient {
       model: chatModel,
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
-      droppable: CHAT_DROPPABLE,
+      droppable: STREAM_DROPPABLE,
       learned: this.learnedFor(chatModel),
       remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? chatModel, update),
-      send: async (adaptation) => {
-        const created = await withRouting(this.openai.chat.completions.create(buildParams(adaptation)));
+      // As chat(): a caller that goes away (or a deadline that passes) stops the upstream request instead of leaving it generating.
+      ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+      send: async (adaptation, signal) => {
+        const created = await withRouting(
+          signal ? this.openai.chat.completions.create(buildParams(adaptation), { signal }) : this.openai.chat.completions.create(buildParams(adaptation)),
+        );
         if (!created.data) throw new UpstreamHttpError(502, 'Upstream returned an empty stream');
         return created;
       },
@@ -568,7 +604,10 @@ export class OpenWebUiClient implements LlmClient {
     // non-stream response's `message.reasoning`, confirmed live above) --
     // not part of the OpenAI SDK's own delta type, hence the inline shape.
     let finishReason: string | undefined;
-    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }[] }>) {
+    let usage: LlmUsage | undefined;
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }[]; usage?: RawUsage | null }>) {
+      // The usage arrives on a final chunk of its own, with no choices (stream_options.include_usage).
+      if (chunk.usage) usage = usageOf(chunk.usage) ?? usage;
       const reason = chunk.choices[0]?.finish_reason;
       if (reason) finishReason = reason;
       const delta = chunk.choices[0]?.delta;
@@ -577,7 +616,7 @@ export class OpenWebUiClient implements LlmClient {
         yield { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) };
       }
     }
-    if (finishReason || routing) yield { ...(finishReason ? { finishReason } : {}), ...(routing ? { routing } : {}) };
+    if (finishReason || routing || usage) yield { ...(finishReason ? { finishReason } : {}), ...(routing ? { routing } : {}), ...(usage ? { usage } : {}) };
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
@@ -1531,7 +1570,7 @@ export class OpenWebUiClient implements LlmClient {
       const temperature = chatTemperature(opts.temperature, a);
       const body = {
         model,
-        messages: outboundMessages,
+        messages: outbound(outboundMessages, false),
         files: [{ type: 'file', id: fileId, context: 'full' }],
         ...(temperature !== undefined ? { temperature } : {}),
         ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts.seed !== undefined ? { seed: opts.seed } : {}),

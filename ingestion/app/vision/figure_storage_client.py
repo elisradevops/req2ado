@@ -98,3 +98,18 @@ class OrchestratorFigureFileClient:
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
         response.raise_for_status()
+
+    def fetch(self, job_id: str, figure_id: str) -> bytes | None:
+        """The stored copy of one figure (the compressed PNG store() wrote), for /captions; None when it was never stored (404). Raises on
+        any other non-2xx/network failure: the caller decides that a figure it cannot fetch is left uncaptioned."""
+        with httpx.Client(
+            transport=self._transport, timeout=_FIGURE_STORE_REQUEST_TIMEOUT_SECONDS
+        ) as client:
+            response = client.get(
+                f"{self._base_url}/jobs/{job_id}/figures/{figure_id}/bytes",
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.content

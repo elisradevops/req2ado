@@ -6,6 +6,7 @@
 
 export type StageName =
   | 'parse'
+  | 'study'
   | 'draft'
   | 'improve'
   | 'summarize'
@@ -84,7 +85,7 @@ export interface MapItem {
 export interface StageUnits {
   type: 'units';
   stage: StageName;
-  unit: 'figures' | 'pages' | 'items' | 'sections' | 'requirements' | 'passes';
+  unit: 'figures' | 'pages' | 'windows' | 'items' | 'sections' | 'requirements' | 'passes';
   done: number;
   total: number;
   complete: boolean;
@@ -108,7 +109,7 @@ export interface ProgressEvent {
    */
   pct: number;
   stage: StageName;
-  unit: 'figures' | 'pages' | 'items' | 'sections' | 'requirements' | 'passes';
+  unit: 'figures' | 'pages' | 'windows' | 'items' | 'sections' | 'requirements' | 'passes';
   done: number;
   total: number;
   /**
@@ -124,10 +125,10 @@ export interface LiveFrame {
   type: 'live';
   seq: number;
   /**
-   * Concurrent chunks or branches each have their own lane.
+   * Concurrent chunks or branches each have their own lane (0 and up). Lane -1 carries model_progress frames only, so they never replace an item lane's latest frame.
    */
   lane: number;
-  kind: 'working_on' | 'writing' | 'item' | 'compare' | 'ocr_page' | 'reset';
+  kind: 'working_on' | 'writing' | 'item' | 'compare' | 'ocr_page' | 'reset' | 'model_progress';
   /**
    * Map item or group this frame is about.
    */
@@ -155,6 +156,22 @@ export interface LiveFrame {
   compare?: ComparePayload | null;
   page?: number | null;
   pages?: number | null;
+  /**
+   * model_progress only: the prompt of the open model call (a code-made name, never document text).
+   */
+  prompt?: string;
+  /**
+   * model_progress only: the pipeline stage of the call (the token ledger's stage name).
+   */
+  stage?: string;
+  /**
+   * model_progress only: seconds since the call was sent.
+   */
+  elapsedS?: number;
+  /**
+   * model_progress only: about how many tokens the model has written so far; null when the call does not stream.
+   */
+  tokens?: number | null;
   emittedAt: string;
 }
 export interface ComparePayload {

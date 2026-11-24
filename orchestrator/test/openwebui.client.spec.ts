@@ -326,6 +326,91 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
+  it('streamChat() asks for usage and yields it on its last chunk, so a streamed call reaches the token ledger', async () => {
+    const client = new OpenWebUiClient({ ...config });
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: '{}' } }] };
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] };
+      yield { choices: [], usage: { prompt_tokens: 12, completion_tokens: 3 } };
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const chunks: unknown[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }])) chunks.push(chunk);
+
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('stream_options', { include_usage: true });
+    expect(chunks[chunks.length - 1]).toEqual(expect.objectContaining({ finishReason: 'stop', usage: { promptTokens: 12, completionTokens: 3 } }));
+  });
+
+  it('streamChat() leaves stream_options out once an upstream rejects it, and still streams', async () => {
+    const client = new OpenWebUiClient({ ...config });
+    const rejection = new OpenAI.APIError(400, { message: "does not support parameters: ['stream_options']" }, "does not support parameters: ['stream_options']", {} as any);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'ok' } }] };
+    }
+    const fakeCreate = jest.fn().mockRejectedValueOnce(rejection).mockResolvedValueOnce(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const texts: string[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }])) if (chunk.content) texts.push(chunk.content);
+
+    expect(texts).toEqual(['ok']);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('stream_options');
+  });
+
+  describe('prompt-cache markers', () => {
+    const userWithParts = {
+      role: 'user' as const,
+      content: '<rubric>rules</rubric>\n\n<source>items</source>',
+      parts: [{ text: '<rubric>rules</rubric>', cache: true }, { text: '\n\n<source>items</source>' }],
+    };
+    const messages = [{ role: 'system' as const, content: 'Instructions.' }, userWithParts];
+    const sent = async (cfg: Record<string, unknown>, model: string, opts: Record<string, unknown> = {}) => {
+      const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true, ...cfg } as any);
+      const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+      await client.chat(messages, { model, ...opts });
+      return fakeCreate.mock.calls[0][0].messages;
+    };
+
+    it('marks the system message and the stable prefix for a Claude model when caching is on', async () => {
+      const out = await sent({ LLM_PROMPT_CACHE: true }, 'claude-opus-5-5');
+      expect(out[0]).toEqual({ role: 'system', content: [{ type: 'text', text: 'Instructions.', cache_control: { type: 'ephemeral' } }] });
+      expect(out[1].content).toEqual([
+        { type: 'text', text: '<rubric>rules</rubric>', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: '\n\n<source>items</source>' },
+      ]);
+    });
+
+    it('sends the exact plain strings as before for a model that is not Claude, or with caching off', async () => {
+      for (const [cfg, model] of [[{ LLM_PROMPT_CACHE: true }, 'OpenAI/gpt-5.4'], [{ LLM_PROMPT_CACHE: false }, 'claude-opus-5-5'], [{}, 'claude-opus-5-5']] as const) {
+        const out = await sent(cfg, model);
+        expect(out).toEqual([{ role: 'system', content: 'Instructions.' }, { role: 'user', content: userWithParts.content }]);
+      }
+    });
+
+    it('lets one request turn caching on or off over the setting (a probe never changes the setting)', async () => {
+      expect((await sent({ LLM_PROMPT_CACHE: false }, 'claude-opus-4-8', { promptCache: true }))[0].content[0].cache_control).toEqual({ type: 'ephemeral' });
+      expect((await sent({ LLM_PROMPT_CACHE: true }, 'claude-opus-4-8', { promptCache: false }))[0]).toEqual({ role: 'system', content: 'Instructions.' });
+    });
+
+    it('marks the stream the same way', async () => {
+      const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true, LLM_PROMPT_CACHE: true } as any);
+      async function* fakeStream() {
+        yield { choices: [{ delta: { content: '{}' }, finish_reason: 'stop' }] };
+      }
+      const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+      for await (const _chunk of client.streamChat(messages, { model: 'claude-opus-5-5' })) void _chunk;
+      expect(fakeCreate.mock.calls[0][0].messages[1].content[0].cache_control).toEqual({ type: 'ephemeral' });
+    });
+  });
+
   describe('responseSchema present -- precise classifiers must win over the catch-all schema-less fallback', () => {
     // Exact production error (Elbichat/claude-opus-4-8 via LiteLLM). Regression
     // for the SURVEY Score-phase stall: isSchemaRejection matches ANY 400, so

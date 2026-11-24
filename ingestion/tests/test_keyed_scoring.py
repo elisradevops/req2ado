@@ -20,7 +20,7 @@ from app.survey.keyed_calls import (
     output_lead,
     reset_degraded,
 )
-from app.survey.keyed_specs import SCORING_SPEC
+from app.survey.keyed_specs import SCORING_POSITIONAL_SPEC, SCORING_SPEC
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from tests._prompt_tags import untagged
 
@@ -142,7 +142,7 @@ def test_the_scoring_schema_does_not_grow_with_the_number_of_nodes() -> None:
 def test_the_model_gives_levels_and_quoted_findings_never_a_score_or_a_confidence() -> None:
     entry = items_schema(SCORING_SPEC)["schema"]["properties"]["items"]["items"]["properties"]
     assert set(entry) == {"id", "categories", "findings"}
-    assert set(entry["categories"]["items"]["properties"]) == {"name", "level", "evidence"}
+    assert set(entry["categories"]["items"]["properties"]) == {"name", "level"}
     assert set(entry["findings"]["items"]["properties"]) == {"issue", "quote"}
     assert "conflicting_value" not in entry["findings"]["items"]["properties"]["issue"]["enum"]
 
@@ -168,9 +168,9 @@ def _levels(ids, level=4, completeness=4, findings=()):
             {
                 "id": i,
                 "categories": [
-                    {"name": "clarity", "level": level, "evidence": ""},
-                    {"name": "testability", "level": level, "evidence": ""},
-                    {"name": "completeness_as_requirement", "level": completeness, "evidence": ""},
+                    {"name": "clarity", "level": level},
+                    {"name": "testability", "level": level},
+                    {"name": "completeness_as_requirement", "level": completeness},
                 ],
                 "findings": [{"issue": f, "quote": q} for f, q in findings],
             }
@@ -199,7 +199,9 @@ def test_two_votes_the_second_in_reverse_order_and_code_computes_the_entry(array
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
 
     assert [_ids(b) for b in seen] == [["n1", "n2"], ["n2", "n1"]]
-    assert seen[0]["responseSchema"] == items_schema(SCORING_SPEC)
+    # Built-in categories are a fixed list: the levels are asked by position. These answers are in the older named form, which is still
+    # read (also_answers + levels_of), so nothing a model sends in that form is lost.
+    assert seen[0]["responseSchema"] == items_schema(SCORING_POSITIONAL_SPEC)
     # levels 3 and 2 average to 2.5 (62.5 -> 62); completeness 4 does not gate it; the finding's quote is in n1 only.
     assert untagged(result)["n1"] == {
         "score": 62,
@@ -211,10 +213,31 @@ def test_two_votes_the_second_in_reverse_order_and_code_computes_the_entry(array
     assert _parse_category_scores(result["n1"]["categoryScores"]) == result["n1"]["categoryScores"]
 
 
+
+def test_levels_by_position_are_scored_like_named_ones(array_mode) -> None:
+    def positional(call, ids):  # noqa: ANN001, ANN202
+        level = 3 if call == 1 else 2
+        return {
+            "items": [
+                {"id": i, "levels": [level, level, level, 4], "findings": [{"issue": "vague_term", "quote": "do X"}]} for i in ids
+            ]
+        }
+
+    handler, _ = _answering(positional)
+    result = untagged(_client(handler).score_requirements_for_document(DESCRIPTIONS))
+    assert result["n1"]["score"] == 62 and result["n1"]["issues"] == ["vague_term"]
+    assert result["n1"]["categoryScores"] == {"clarity": 62, "testability": 62, "atomicity": 62, "completeness_as_requirement": 100}
+
+
+def test_a_positional_answer_with_a_level_missing_is_not_scored(array_mode) -> None:
+    handler, _ = _answering(lambda call, ids: {"items": [{"id": i, "levels": [4, 4, 4], "findings": []} for i in ids]})
+    assert untagged(_client(handler).score_requirements_for_document(DESCRIPTIONS)) == {}
+
 def test_votes_that_disagree_on_whether_it_is_a_requirement_give_a_low_confidence(
     array_mode,
 ) -> None:
-    handler, _ = _answering(lambda call, ids: _levels(ids, completeness=4 if call == 1 else 0))
+    # The first vote's completeness 2 is one step above "fragment", so the second vote is asked; it says 0.
+    handler, _ = _answering(lambda call, ids: _levels(ids, completeness=2 if call == 1 else 0))
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
     assert result["n1"]["confidence"] == "low"
     assert "not_a_requirement" not in result["n1"]["issues"]  # the mean level, 2, states no issue
@@ -229,30 +252,37 @@ def test_a_failed_second_vote_leaves_one_vote_and_a_medium_confidence(
         calls.append(1)
         if len(calls) > 1:
             return httpx.Response(500, json={})
-        return httpx.Response(200, json={"content": json.dumps(_levels(DESCRIPTIONS))})
+        # Levels of 2 are borderline (one step above an issue), so the second vote is asked, and fails.
+        return httpx.Response(200, json={"content": json.dumps(_levels(DESCRIPTIONS, level=2))})
 
     monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
     client = _client(handler)
     result = client.score_requirements_for_document(DESCRIPTIONS)
-    assert result["n1"]["confidence"] == "medium" and result["n1"]["score"] == 100
+    assert result["n1"]["confidence"] == "medium" and result["n1"]["score"] == 50
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "expected"),
+    ("kwargs", "expected", "spec", "form"),
     [
-        ({}, "EXACTLY 4"),
-        ({"category_checklist": ["Necessary", "Verifiable"]}, "3 entries in total, never fewer"),
-        ({"kb_context": "KB material"}, "Decide the names ONCE"),
+        ({}, "EXACTLY 4 integers, one per category, in this order", SCORING_POSITIONAL_SPEC, "'levels' and 'findings'"),
+        (
+            {"category_checklist": ["Necessary", "Verifiable"]},
+            "EXACTLY 3 integers: the level of each name in the <category_names> block",
+            SCORING_POSITIONAL_SPEC,
+            "'levels' and 'findings'",
+        ),
+        ({"kb_context": "KB material"}, "Decide the names ONCE", SCORING_SPEC, '{"name", "level"}'),
     ],
 )
 def test_the_prompt_describes_the_category_list_the_schema_expects(
-    array_mode, kwargs, expected
+    array_mode, kwargs, expected, spec, form
 ) -> None:
+    # A fixed list (built-in, checklist) is answered by position; categories derived from knowledge-base material stay named.
     prompt = _bodies(lambda c: c.score_requirements_for_document(DESCRIPTIONS, **kwargs))[0][
         "messages"
     ][0]["content"]
-    assert expected in prompt and '{"name", "level", "evidence"}' in prompt
-    assert output_lead(SCORING_SPEC, "array") in prompt and "exactly 2 node_id(s)" in prompt
+    assert expected in prompt and form in prompt and "evidence" not in prompt
+    assert output_lead(spec, "array") in prompt and "exactly 2 node_id(s)" in prompt
     assert "completeness_as_requirement: 4 = a complete requirement" in prompt
     assert "'score' (an integer 0-100)" not in prompt and "'confidence'" not in prompt
 
@@ -299,7 +329,8 @@ def test_the_obligation_form_and_hebrew_text_reach_the_model_as_written() -> Non
 
 
 def test_omitted_nodes_are_asked_for_again_once_per_vote(array_mode) -> None:
-    handler, seen = _answering(lambda call, ids: _levels(ids[:1] if call in (1, 3) else ids))
+    # Borderline levels, so every item is asked the second vote too.
+    handler, seen = _answering(lambda call, ids: _levels(ids[:1] if call in (1, 3) else ids, level=2))
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
     assert set(result) == set(DESCRIPTIONS)
     assert [_ids(b) for b in seen] == [["n1", "n2"], ["n2"], ["n2", "n1"], ["n1"]]
@@ -337,7 +368,7 @@ def test_each_complete_vote_is_cached_raw_and_scored_after_the_cache(array_mode)
     _client(partial, cache).score_requirements_for_document(DESCRIPTIONS)
     assert cache.stored == {}
 
-    handler, _ = _answering(lambda call, ids: _levels(ids))
+    handler, _ = _answering(lambda call, ids: _levels(ids, level=2))  # borderline: both votes are asked
     first = _client(handler, cache).score_requirements_for_document(DESCRIPTIONS)
     assert len(cache.stored) == 2
     assert all("categories" in entry for vote in cache.stored.values() for entry in vote.values())

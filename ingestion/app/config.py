@@ -227,6 +227,11 @@ class Settings(BaseSettings):
     # study lowers it by one on each 429 it sees), and how many windows ahead of the one being merged may be submitted.
     survey_study_concurrency: int = Field(default=4, ge=1, le=8)
     survey_study_lookahead: int = Field(default=8, ge=1)
+    # The Study (app.leveling.study): its time budget is the characters to read x the model's median seconds per 1,000 characters (the
+    # last study_timing_samples window calls measured, per model) / survey_study_concurrency, plus one window of slack, at most
+    # survey_study_hard_budget_seconds. Until enough calls are measured, study_default_seconds_per_window (a full 20,000-character window) is used.
+    study_default_seconds_per_window: float = Field(default=60.0, gt=0)
+    study_timing_samples: int = Field(default=20, ge=1)
     # The acceptance-criteria proposals (app.leveling.acceptance_criteria): how many chunks of requirements are asked at once (2 when no shared
     # limiter is available), the whole step's time budget (chunks not started by then are reported, not asked) and how long one model attempt
     # waits for a limiter slot. Each attempt holds one slot of the limiter above.
@@ -269,6 +274,14 @@ class Settings(BaseSettings):
     # display observer -- the returned value still comes from the existing
     # full-text parse, so results are unchanged either way.
     llm_stream_drafting: bool = False
+    # llm_stream_progress: with live progress on, every other model call of a job (scoring, trace links, criteria, ...) is streamed
+    # too, so the screen can show how far a long call has got (elapsed time and about how many tokens were written). The answer is
+    # parsed exactly as the plain call's; a study call stays plain. Off: those calls are plain and report elapsed time only.
+    llm_stream_progress: bool = True
+    # llm_prompt_cache: send the stable start of each call's user message (knowledge-base text, rubric, fixed vocabularies) as its own
+    # text part marked as a prompt-cache breakpoint. The orchestrator forwards the mark only to a Claude model with caching on, and
+    # otherwise sends the joined text unchanged. Off: the request is exactly as before.
+    llm_prompt_cache: bool = False
     # Longest excerpt of the owner's own document text sent on the live
     # channel, in characters. Bounded so a misconfiguration cannot turn the
     # event bus into a document copy.

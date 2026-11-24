@@ -29,9 +29,11 @@ async def ndjson_stream(
     *,
     heartbeat_seconds: float,
     describe_failure: Callable[[Exception], tuple[int, str]],
+    status: Callable[[], dict] | None = None,
 ) -> AsyncIterator[bytes]:
     """Runs `work` and yields `{"type":"heartbeat","elapsed":s}` lines while it runs, then `{"type":"result", **payload}` or
-    `{"type":"error","status":n,"detail":"..."}` (from `describe_failure`)."""
+    `{"type":"error","status":n,"detail":"..."}` (from `describe_failure`). With `status`, each heartbeat also carries what it returns
+    at that moment (how far the run is, e.g. the Study's windows read)."""
     started = time.monotonic()
     task = asyncio.ensure_future(work())
     task.add_done_callback(
@@ -42,12 +44,12 @@ async def ndjson_stream(
             done, _pending = await asyncio.wait({task}, timeout=heartbeat_seconds)
             if done:
                 break
-            yield line({"type": "heartbeat", "elapsed": round(time.monotonic() - started)})
+            yield line({"type": "heartbeat", "elapsed": round(time.monotonic() - started), **(status() if status else {})})
         try:
             payload = task.result()
         except Exception as exc:  # noqa: BLE001 -- whatever stopped the run is the answer, as a line
-            status, detail = describe_failure(exc)
-            yield line({"type": "error", "status": status, "detail": detail})
+            code, detail = describe_failure(exc)
+            yield line({"type": "error", "status": code, "detail": detail})
             return
         yield line({"type": "result", **payload})
     finally:

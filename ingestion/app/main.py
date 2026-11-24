@@ -7,6 +7,7 @@ import logging
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -77,6 +78,15 @@ from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
+from app.leveling.study import (
+    Study,
+    StudyResultCache,
+    StudyTimings,
+    build_study,
+    orientation_text,
+    study_of,
+    study_result_version,
+)
 from app.leveling.study_store import StudyStore
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
@@ -413,6 +423,9 @@ _study_limiter = LeaseLimiter(
     settings.survey_study_user_slots,
     settings.survey_study_lease_seconds,
 )
+# The Study's whole results (per user and document) and the model's measured seconds per window (its time budget); same client, fail-open.
+_study_result_cache = StudyResultCache(_study_redis, settings.survey_study_cache_ttl_seconds)
+_study_timings = StudyTimings(_study_redis, settings.study_timing_samples, settings.survey_study_cache_ttl_seconds)
 
 
 def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
@@ -964,6 +977,178 @@ def _caption_and_store_one_figure(
     )
 
 
+def _caption_figures(
+    doc: CanonicalDoc,
+    figure_bytes: Sequence[bytes | None],
+    document_context: str | None,
+    store_job_id: str | None,
+    *,
+    user_id: str | None,
+    model: str | None,
+    narration_publisher: NarrationPublisher | None,
+    breaker: _VisionBreaker,
+) -> list[str]:
+    """The captioning pass over a parsed document's figures (figure_bytes[i] is figure f{i}): each figure described with
+    `document_context` (/ingest's primer_context; _describe_figure's document_context), its caption written back onto the figure and
+    its FIGURE block, its caption status, reason and fallback title patched onto the figure. With `store_job_id` each figure's bytes are
+    also stored against that job (best-effort). Returns the ids of the figures whose storage failed, in figure order. A None entry (bytes
+    /captions could not fetch) is left uncaptioned.
+
+    Runs on a worker thread via run_in_threadpool, NEVER on the event loop: every figure makes a blocking vision HTTP call (up to
+    vision_request_timeout_seconds), rasterizes the image, and talks to Redis and the figure-file store, all synchronously. In production
+    this pass used to run inline in the `async def` handler, which froze the event loop for the whole pass -- /health went unanswered,
+    six liveness probes failed, and kubelet killed the pod mid-job. Narration publishing and merging stay together on this ONE thread, in
+    figure-id order. Shared by /ingest (captions while parsing) and /captions (captions after the Study)."""
+    figure_total = len(figure_bytes)
+    figure_outcomes: list[FigureCaptionOutcome] = []
+    failed_figure_ids: list[str] = []
+    figure_caption_status: dict[str, str] = {}
+    figure_caption_reason: dict[str, str] = {}
+    figure_title: dict[str, str] = {}
+
+    def _publish_figure_start(figure_position: int) -> None:
+        if narration_publisher is None:
+            return
+        narration_publisher.publish(
+            LevelingProgress(
+                phase="describe_figure",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
+                figure_index=figure_position + 1,
+                figure_count=figure_total,
+            )
+        )
+
+    def _caption_one(figure_position: int) -> FigureCaptionOutcome:
+        # Two byte-identical figures
+        # could in principle race the same caption cache key here and
+        # both make a live call; harmless, and unreachable within one
+        # document anyway, since every loader already dedupes identical
+        # figures by sha256 before the collector ever sees the second.
+        image_bytes = figure_bytes[figure_position]
+        if image_bytes is None:  # /captions could not fetch it: nothing to describe, and not a vision failure for the breaker
+            return FigureCaptionOutcome(
+                figure_id=f"f{figure_position}",
+                caption=None,
+                status="vision_failed",
+                title=None,
+                storage_failed=False,
+                skipped=True,
+            )
+        outcome = _caption_and_store_one_figure(
+            f"f{figure_position}",
+            image_bytes,
+            document_context,
+            store_job_id,
+            user_id=user_id,
+            model=model,
+            skip_caption=breaker.tripped,
+        )
+        breaker.record(outcome)
+        return outcome
+
+    def _merge_one(outcome: FigureCaptionOutcome) -> None:
+        """Everything one finished figure changes, all on the CALLING
+        thread and all at the moment that figure's result is consumed."""
+        figure_outcomes.append(outcome)
+        if outcome.status is not None:
+            figure_caption_status[outcome.figure_id] = outcome.status
+        if outcome.reason:
+            figure_caption_reason[outcome.figure_id] = outcome.reason
+        if outcome.title is not None:
+            figure_title[outcome.figure_id] = outcome.title
+        if outcome.storage_failed:
+            failed_figure_ids.append(outcome.figure_id)
+        if narration_publisher is not None:
+            # caption is None exactly when the vision model judged this
+            # figure non-significant (or vision failed) -- both cases get
+            # the same honest "nothing here" narration copy.
+            display_caption = (
+                outcome.caption
+                if outcome.caption is not None
+                else "this figure has no discernible technical content"
+            )
+            narration_publisher.publish(
+                LevelingProgress(
+                    phase="describe_figure",
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
+                    figure_index=int(outcome.figure_id[1:]) + 1,
+                    figure_caption=display_caption,
+                    figure_count=figure_total,
+                    # Distinct from display_caption above -- see
+                    # LevelingProgress.figure_caption_status's own docstring.
+                    figure_caption_status=outcome.status,
+                    figure_caption_reason=outcome.reason,
+                )
+            )
+
+    caption_concurrency = settings.vision_caption_concurrency
+    if caption_concurrency <= 1 or len(figure_bytes) <= 1:
+        # Byte-identical to this pass's pre-concurrency form: one figure
+        # at a time, in document order, with no ThreadPoolExecutor
+        # constructed at all -- zero new risk for every deployment that
+        # hasn't opted into concurrency. Same guard shape
+        # llm_leveling.py's own branch/batch fan-outs use.
+        for figure_position in range(len(figure_bytes)):
+            _publish_figure_start(figure_position)
+            _merge_one(_caption_one(figure_position))
+    else:
+        with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
+            futures = [
+                job_cancel.submit_in_context(executor, _caption_one, figure_position)
+                for figure_position in range(len(figure_bytes))
+            ]
+            # Consumed by INDEX (list position of the future), never by
+            # completion order -- and each figure's "starting" event is
+            # published LAZILY, immediately before its own result is
+            # pulled, exactly as bounded_chunks.run_chunks_bounded's
+            # generator lets its callers do. Publishing all the starts up
+            # front instead (which this loop used to do) fires the whole
+            # phase's narration back-to-back in microseconds: the progress
+            # bar jumps to ~100% of the figure phase and then freezes for
+            # the entire pass, and every caption lands in one burst at the
+            # end. Same regression, same fix, as the chunked-pass
+            # narration a sibling sweep item already corrected.
+            for figure_position, future in enumerate(futures):
+                _publish_figure_start(figure_position)
+                _merge_one(future.result())
+    _reassign_figure_captions(doc, figure_outcomes)
+    # Patch each figure's caption_status from the per-request side channel
+    # populated above -- can't be set until now since the Figure objects
+    # themselves don't exist until dispatch_by_extension returns `doc`.
+    # Empty (no-op loop) whenever vision_active is False, so caption_status
+    # stays at its None default for every figure in that case (sub-fix (i)'s
+    # tree-level warning covers that case instead -- see main.py's /level
+    # route and _append_vision_disabled_warning below).
+    if figure_caption_status or figure_title:
+        _figures_by_id = {figure.id: figure for figure in doc.figures}
+        for _figure_id, _status in figure_caption_status.items():
+            _figure = _figures_by_id.get(_figure_id)
+            if _figure is not None:
+                _figure.caption_status = _status
+                _figure.caption_reason = figure_caption_reason.get(_figure_id)
+        # Task 7: ONLY a fallback -- applied when the loader itself found no
+        # document caption for this figure (figure_utils.py's
+        # extract_figure_title, used by PDF and docx -- docx via its own
+        # Caption paragraph style). A figure the document already named
+        # keeps that name unconditionally; the vision title never overrides
+        # it.
+        for _figure_id, _title in figure_title.items():
+            _figure = _figures_by_id.get(_figure_id)
+            if _figure is not None and _figure.name is None:
+                _figure.name = _title
+    return failed_figure_ids
+
+
 def _reassign_figure_captions(doc: CanonicalDoc, outcomes: list[FigureCaptionOutcome]) -> None:
     """Writes each figure's post-parse caption back onto the already-built
     tree, by figure id. The ONE place the tree is mutated by the captioning
@@ -1454,6 +1639,9 @@ async def ingest(
     # model catalog check). Only meaningful together with skip_vision=true;
     # surfaced on CanonicalDoc.vision_skip_reason for the job warning.
     vision_skip_reason: str | None = None,
+    # STUDY_PHASE on: parse exactly as a captioned run does and store every figure's bytes, but write no caption -- /captions writes them
+    # after the Study, from the stored copies. Only with vision on and a job id (the stored copy is what /captions reads); otherwise ignored.
+    defer_captions: bool = False,
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
     x_primer_context: str | None = Header(default=None, alias=PRIMER_HEADER),
 ) -> CanonicalDoc:
@@ -1498,6 +1686,7 @@ async def ingest(
 
     narration_publisher = NarrationPublisher(_narration_redis, job_id) if job_id else None
     vision_active = not skip_vision and mode == "survey" and bool(user_id)
+    deferring_captions = defer_captions and vision_active and job_id is not None
     # Why the gate is shut, for CanonicalDoc.vision_skip_reason (None when
     # vision is active). Order matters: BASELINE is the contractual reason
     # and wins over anything else.
@@ -1520,23 +1709,6 @@ async def ingest(
     # its own synthesized WarningRecord (mirrors ado_verification_failed's
     # precedent -- see pipeline.worker.ts).
     failed_figure_ids: list[str] = []
-    # figure_id -> "insignificant"|"vision_failed", populated below (only
-    # while vision_active) via _describe_figure's caption_status_out
-    # side-channel -- patched onto doc.figures[i].caption_status once `doc`
-    # exists (see below), since a Figure model isn't constructed until the
-    # loader returns. Empty (and doc.figures[*].caption_status left at its
-    # None default) whenever vision_active is False, matching sub-fix (i)'s
-    # "never disambiguate insignificant/failed when vision never ran" rule.
-    figure_caption_status: dict[str, str] = {}
-    figure_caption_reason: dict[
-        str, str
-    ] = {}  # same shape: the model's reason for a not-significant verdict
-    # Task 7: figure_id -> the vision model's own short title, same
-    # side-channel/patch-after-doc-exists shape as figure_caption_status
-    # above. Only ever used as a FALLBACK once `doc` exists (see the patch
-    # loop below) -- a figure the document itself already named via Task 4
-    # keeps that name unconditionally.
-    figure_title: dict[str, str] = {}
     # Every figure's original bytes, in loader-append order -- collected
     # during the parse, captioned afterward (see the post-parse captioning
     # pass below). The collector deliberately does NOTHING but record and
@@ -1680,132 +1852,11 @@ async def ingest(
     # pypdf xobject count for pdf (which the loaders' own suppression/dedupe
     # gates could legitimately reduce). The denominator the user sees is now
     # the number of figures that will actually be captioned.
-    figure_total = len(collected_figure_bytes)
-    figure_outcomes: list[FigureCaptionOutcome] = []
-
-    def _run_captioning_pass() -> None:
-        # Runs on a worker thread via run_in_threadpool (see the call below),
-        # NEVER on the event loop: every figure makes a blocking vision HTTP
-        # call (up to vision_request_timeout_seconds), rasterizes the image,
-        # and talks to Redis and the figure-file store, all synchronously. In
-        # production this pass used to run inline in the `async def` handler,
-        # which froze the event loop for the whole pass -- /health went
-        # unanswered, six liveness probes failed, and kubelet killed the pod
-        # mid-job. Narration publishing and merging stay together on this ONE
-        # thread, in figure-id order, exactly as when they ran on the
-        # handler's own thread.
-        def _publish_figure_start(figure_position: int) -> None:
-            if narration_publisher is None:
-                return
-            narration_publisher.publish(
-                LevelingProgress(
-                    phase="describe_figure",
-                    branch_index=None,
-                    branch_count=0,
-                    blocks_done=0,
-                    blocks_total=0,
-                    kb_grounded=False,
-                    kb_citations=[],
-                    figure_index=figure_position + 1,
-                    figure_count=figure_total,
-                )
-            )
-
-        def _caption_one(figure_position: int) -> FigureCaptionOutcome:
-            # primer_context is the /ingest route param; _describe_figure's
-            # own parameter is named document_context -- this is the one
-            # place that boundary rename happens. Two byte-identical figures
-            # could in principle race the same caption cache key here and
-            # both make a live call; harmless, and unreachable within one
-            # document anyway, since every loader already dedupes identical
-            # figures by sha256 before the collector ever sees the second.
-            outcome = _caption_and_store_one_figure(
-                f"f{figure_position}",
-                collected_figure_bytes[figure_position],
-                primer_context,
-                job_id,
-                user_id=user_id,
-                model=vision_model,
-                skip_caption=breaker.tripped,
-            )
-            breaker.record(outcome)
-            return outcome
-
-        def _merge_one(outcome: FigureCaptionOutcome) -> None:
-            """Everything one finished figure changes, all on the CALLING
-            thread and all at the moment that figure's result is consumed."""
-            figure_outcomes.append(outcome)
-            if outcome.status is not None:
-                figure_caption_status[outcome.figure_id] = outcome.status
-            if outcome.reason:
-                figure_caption_reason[outcome.figure_id] = outcome.reason
-            if outcome.title is not None:
-                figure_title[outcome.figure_id] = outcome.title
-            if outcome.storage_failed:
-                failed_figure_ids.append(outcome.figure_id)
-            if narration_publisher is not None:
-                # caption is None exactly when the vision model judged this
-                # figure non-significant (or vision failed) -- both cases get
-                # the same honest "nothing here" narration copy.
-                display_caption = (
-                    outcome.caption
-                    if outcome.caption is not None
-                    else "this figure has no discernible technical content"
-                )
-                narration_publisher.publish(
-                    LevelingProgress(
-                        phase="describe_figure",
-                        branch_index=None,
-                        branch_count=0,
-                        blocks_done=0,
-                        blocks_total=0,
-                        kb_grounded=False,
-                        kb_citations=[],
-                        figure_index=int(outcome.figure_id[1:]) + 1,
-                        figure_caption=display_caption,
-                        figure_count=figure_total,
-                        # Distinct from display_caption above -- see
-                        # LevelingProgress.figure_caption_status's own docstring.
-                        figure_caption_status=outcome.status,
-                        figure_caption_reason=outcome.reason,
-                    )
-                )
-
-        caption_concurrency = settings.vision_caption_concurrency
-        if caption_concurrency <= 1 or len(collected_figure_bytes) <= 1:
-            # Byte-identical to this pass's pre-concurrency form: one figure
-            # at a time, in document order, with no ThreadPoolExecutor
-            # constructed at all -- zero new risk for every deployment that
-            # hasn't opted into concurrency. Same guard shape
-            # llm_leveling.py's own branch/batch fan-outs use.
-            for figure_position in range(len(collected_figure_bytes)):
-                _publish_figure_start(figure_position)
-                _merge_one(_caption_one(figure_position))
-        else:
-            with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
-                futures = [
-                    job_cancel.submit_in_context(executor, _caption_one, figure_position)
-                    for figure_position in range(len(collected_figure_bytes))
-                ]
-                # Consumed by INDEX (list position of the future), never by
-                # completion order -- and each figure's "starting" event is
-                # published LAZILY, immediately before its own result is
-                # pulled, exactly as bounded_chunks.run_chunks_bounded's
-                # generator lets its callers do. Publishing all the starts up
-                # front instead (which this loop used to do) fires the whole
-                # phase's narration back-to-back in microseconds: the progress
-                # bar jumps to ~100% of the figure phase and then freezes for
-                # the entire pass, and every caption lands in one burst at the
-                # end. Same regression, same fix, as the chunked-pass
-                # narration a sibling sweep item already corrected.
-                for figure_position, future in enumerate(futures):
-                    _publish_figure_start(figure_position)
-                    _merge_one(future.result())
-        _reassign_figure_captions(doc, figure_outcomes)
 
     def _run_baseline_store_pass() -> None:
         # Store-only: no vision, no caption_status, no narration -- the figure
-        # bytes just need to be attachable to the work items later.
+        # bytes just need to be attachable to the work items later (and, with
+        # captions deferred, to be read back by /captions after the Study).
         # Bounded: a small pool, an overall time budget, and the cancellation
         # check on this (calling) thread before each submit.
         assert job_id is not None
@@ -1847,7 +1898,7 @@ async def ingest(
         executor.shutdown(wait=True)
         failed_figure_ids.extend(f"f{position}" for position in sorted(failed_positions))
 
-    if collected_figure_bytes and not vision_active:
+    if collected_figure_bytes and (not vision_active or deferring_captions):
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
                 try:
@@ -1861,13 +1912,26 @@ async def ingest(
                     status_code=499, detail="the caller disconnected; the run was cancelled"
                 )
 
-    if collected_figure_bytes and vision_active:
+    if collected_figure_bytes and vision_active and not deferring_captions:
         # The caller (the orchestrator's request) going away cancels the figures not yet captioned and the call in flight:
         # a cancelled job must not keep a one-request-at-a-time backend busy describing figures nobody will read.
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
                 try:
-                    await run_in_threadpool(_run_captioning_pass)
+                    failed_figure_ids.extend(
+                        await run_in_threadpool(
+                            lambda: _caption_figures(
+                                doc,
+                                collected_figure_bytes,
+                                primer_context,
+                                job_id,
+                                user_id=user_id,
+                                model=vision_model,
+                                narration_publisher=narration_publisher,
+                                breaker=breaker,
+                            )
+                        )
+                    )
                 except job_cancel.JobCancelled:
                     raise HTTPException(
                         status_code=499, detail="the caller disconnected; the run was cancelled"
@@ -1880,30 +1944,6 @@ async def ingest(
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active
     doc.vision_skip_reason = "breaker_tripped" if breaker.tripped else skip_reason
-    # Patch each figure's caption_status from the per-request side channel
-    # populated above -- can't be set until now since the Figure objects
-    # themselves don't exist until dispatch_by_extension returns `doc`.
-    # Empty (no-op loop) whenever vision_active is False, so caption_status
-    # stays at its None default for every figure in that case (sub-fix (i)'s
-    # tree-level warning covers that case instead -- see main.py's /level
-    # route and _append_vision_disabled_warning below).
-    if figure_caption_status or figure_title:
-        _figures_by_id = {figure.id: figure for figure in doc.figures}
-        for _figure_id, _status in figure_caption_status.items():
-            _figure = _figures_by_id.get(_figure_id)
-            if _figure is not None:
-                _figure.caption_status = _status
-                _figure.caption_reason = figure_caption_reason.get(_figure_id)
-        # Task 7: ONLY a fallback -- applied when the loader itself found no
-        # document caption for this figure (figure_utils.py's
-        # extract_figure_title, used by PDF and docx -- docx via its own
-        # Caption paragraph style). A figure the document already named
-        # keeps that name unconditionally; the vision title never overrides
-        # it.
-        for _figure_id, _title in figure_title.items():
-            _figure = _figures_by_id.get(_figure_id)
-            if _figure is not None and _figure.name is None:
-                _figure.name = _title
 
     if narration_publisher is not None:
         narration_publisher.publish(
@@ -1956,6 +1996,89 @@ async def ingest(
     # build /level does (it overwrites this with an identical map); observation only, a no-op unless live progress is on.
     if settings.live_progress and job_id is not None:
         await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)
+    return doc
+
+
+class CaptionsRequest(BaseModel):
+    doc: CanonicalDoc  # as /ingest returned it with defer_captions (figures stored, none captioned)
+    context: str | None = None  # the captions' document context (what the primer was); absent: taken from `study`
+    study: dict | None = None  # the job's Study (its JSON form): its orientation is the context, rendered as /level renders it
+    vision_model: str | None = None
+    redact: bool = False  # the job's own /ingest redact flag: captions written now are redacted the same way
+
+
+def _fetch_figure_bytes(job_id: str, figure_ids: list[str]) -> list[bytes | None]:
+    """Each figure's stored copy, in figure order; None for one that was never stored or cannot be fetched (it is left uncaptioned)."""
+    fetched: list[bytes | None] = []
+    for figure_id in figure_ids:
+        job_cancel.raise_if_cancelled()
+        try:
+            fetched.append(_figure_file_client.fetch(job_id, figure_id))
+        except Exception:  # noqa: BLE001 -- one figure that cannot be read is left uncaptioned, never a failed job
+            logger.warning("Stored figure %s could not be read for captioning", figure_id, exc_info=True)
+            fetched.append(None)
+    return fetched
+
+
+@app.post("/captions", response_model=CanonicalDoc)
+async def captions(
+    request: Request,
+    body: CaptionsRequest,
+    job_id: str,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> CanonicalDoc:
+    """Writes the figure captions of a document parsed with defer_captions, after its Study: the same captioning pass /ingest runs
+    (_caption_figures), with the Study's orientation as context, describing each figure from the copy /ingest stored for the job (no second
+    parse). A BASELINE document is captioned the same way (/ingest stores its figures; the orchestrator asks only for a user with a model
+    connection), and is then marked as captioned. A SURVEY document vision was turned off for (a model that cannot read images), or one
+    with no figure, comes back unchanged. The caller going away cancels the pass (499)."""
+    user_id = resolve_user_id(x_user_id)
+    doc = body.doc
+    baseline = doc.vision_skip_reason == "baseline_mode"
+    if not (doc.vision_active or baseline) or not doc.figures or not user_id:
+        return doc
+    figure_ids = [figure.id for figure in doc.figures]
+    if figure_ids != [f"f{position}" for position in range(len(figure_ids))]:
+        raise HTTPException(status_code=422, detail="the document's figures are not numbered as /ingest numbers them")
+    narration_publisher = NarrationPublisher(_narration_redis, job_id)
+    breaker = _VisionBreaker(_VISION_BREAKER_THRESHOLD)
+    context = body.context
+    if context is None and body.study is not None:
+        given = study_of(doc.model_copy(update={"study": body.study}))
+        context = orientation_text(given.orientation) if given is not None else None
+
+    def _run() -> list[str]:
+        figure_bytes = _fetch_figure_bytes(job_id, figure_ids)
+        return _caption_figures(
+            doc,
+            figure_bytes,
+            context,
+            None,  # already stored by /ingest
+            user_id=user_id,
+            model=body.vision_model,
+            narration_publisher=narration_publisher,
+            breaker=breaker,
+        )
+
+    with job_cancel.cancellation_scope() as cancel_token:
+        async with job_cancel.watch_for_disconnect(request, cancel_token):
+            try:
+                await run_in_threadpool(_run)
+            except job_cancel.JobCancelled:
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the run was cancelled"
+                ) from None
+        if cancel_token.cancelled:
+            raise HTTPException(
+                status_code=499, detail="the caller disconnected; the run was cancelled"
+            )
+    if baseline:
+        doc.vision_active = True
+        doc.vision_skip_reason = None
+    if breaker.tripped:
+        doc.vision_skip_reason = "breaker_tripped"
+    if body.redact:
+        doc = await run_in_threadpool(redact_canonical_doc, doc)
     return doc
 
 
@@ -2419,6 +2542,118 @@ async def prestudy_route(
                 status_code=499, detail="the caller disconnected; the study was cancelled"
             )
     return _prestudy_response(doc, rulebook, "none" if rulebook.is_empty() else "model", warnings)
+
+
+def _study_progress(job_id: str | None) -> Callable[[int, int], None] | None:
+    """Publishes the Study's reading as the job's study stage (windows accounted for of windows to read); None without a job."""
+    if job_id is None:
+        return None
+    publisher = NarrationPublisher(_narration_redis, job_id)
+
+    def report(done: int, total: int) -> None:
+        publisher.publish(
+            LevelingProgress(
+                phase="study_window",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=done,
+                blocks_total=total,
+                kb_grounded=False,
+                kb_citations=[],
+            )
+        )
+
+    return report
+
+
+class StudyRequest(BaseModel):
+    doc: CanonicalDoc  # its rulebook, when the file was pre-studied, decides which tables state their items' types
+    model: str | None = None
+
+
+@app.get("/study/version")
+async def study_version_route() -> dict:
+    """How a Study is made right now (window reading, orientation prompt, code pass): a Study cached under another version is not reused."""
+    return {"version": study_result_version()}
+
+
+# How often a streamed /study sends a heartbeat line (with how many windows are read) while it reads.
+STUDY_HEARTBEAT_SECONDS = 2.0
+
+
+@app.post("/study", response_model=None)
+async def study_route(
+    request: Request,
+    body: StudyRequest,
+    job_id: str | None = None,  # the job the reading is for: its study stage counts the windows; absent (the wizard): no job progress
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> Study | StreamingResponse:
+    """One reading of the document (app.leveling.study): the grounded facts, a short orientation and each stated table's vocabulary. Never
+    fails for a model that fails: the stats and warnings say what was read.
+
+    Asked with `Accept: application/x-ndjson` (the wizard, which shows how far the reading is): streamed as heartbeat lines that carry
+    `windowsDone`/`windowsTotal`, then one `{"type":"result","study":{...}}` line (or an error line); closing the stream cancels the reading.
+    Otherwise one JSON response, the caller going away cancelling the reading (499)."""
+    user_id = resolve_user_id(x_user_id)
+    doc = body.doc
+    rulebook = _rulebook_of(doc)
+    client = await _survey_client(body.model, user_id)
+    progress = {"windowsDone": 0, "windowsTotal": 0}
+    report_job = _study_progress(job_id)
+
+    def on_progress(done: int, total: int) -> None:
+        progress.update(windowsDone=done, windowsTotal=total)
+        if report_job is not None:
+            report_job(done, total)
+
+    def run() -> Study:
+        return build_study(
+            doc,
+            client,
+            user_id,
+            body.model,
+            rulebook=rulebook,
+            store=_study_store,
+            limiter=_study_limiter,
+            timings=_study_timings,
+            cache=_study_result_cache,
+            on_progress=on_progress,
+        )
+
+    if NDJSON in request.headers.get("accept", ""):
+        token = job_cancel.CancelToken()
+
+        async def work() -> dict:
+            with job_cancel.cancellation_scope(token):
+                study = await run_in_threadpool(run)
+            return {"study": study.model_dump(mode="json")}
+
+        def describe(exc: Exception) -> tuple[int, str]:
+            if isinstance(exc, job_cancel.JobCancelled):
+                return 499, "the caller disconnected; the study was cancelled"
+            logger.exception("Unhandled exception in %s", request.url)
+            return 500, describe_exception(exc)
+
+        return StreamingResponse(
+            ndjson_stream(
+                work, token, heartbeat_seconds=STUDY_HEARTBEAT_SECONDS, describe_failure=describe, status=lambda: dict(progress)
+            ),
+            media_type=NDJSON,
+        )
+    # The caller going away cancels the reading: no further window is asked, and a run that was cancelled stores nothing.
+    with job_cancel.cancellation_scope() as cancel_token:
+        async with job_cancel.watch_for_disconnect(request, cancel_token):
+            try:
+                study = await run_in_threadpool(run)
+            except job_cancel.JobCancelled:
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the study was cancelled"
+                ) from None
+        if cancel_token.cancelled:
+            raise HTTPException(
+                status_code=499, detail="the caller disconnected; the study was cancelled"
+            )
+    return study
 
 
 @app.post("/level", response_model=WorkItemTree)

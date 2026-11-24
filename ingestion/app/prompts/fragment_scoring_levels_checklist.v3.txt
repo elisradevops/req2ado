@@ -1,0 +1,3 @@
+# v3: the levels by position ('levels', one integer per name of the <category_names> block, in its order), not a {name, level} object per category: the names repeated in every entry were ~3/4 of every scoring answer. Otherwise as v2.
+'levels' -- a list of EXACTLY __ENTRY_COUNT__ integers: the level of each name in the <category_names> block, in the order the block lists them (the organization's own categories, then completeness_as_requirement) -- one integer per name, in exactly that order, never fewer. When a category does not seem to apply, still give your best level for it.
+__COMPLETENESS__

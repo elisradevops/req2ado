@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any, Literal
 
 import httpx
@@ -41,6 +42,7 @@ from app.leveling.score_levels import (
     builtin_categories,
     entry_from_votes,
     findings_for,
+    needs_second_vote,
 )
 from app.logging_context import current_job_id
 from app.otel import get_tracer
@@ -52,6 +54,7 @@ from app.survey._response_schemas import (
     acceptance_criteria_schema,
     checklist_definitions_schema,
     checklist_extraction_schema,
+    document_orientation_schema,
     document_study_schema,
     duplicate_pair_verdict_schema,
     file_rules_document_schema,
@@ -87,6 +90,7 @@ from app.survey.keyed_specs import (
     PAIR_VERDICTS,
     PARAMETER_PAIR_SPEC,
     PARENT_SUMMARY_SPEC,
+    SCORING_POSITIONAL_SPEC,
     SCORING_SPEC,
     SYNTHESIS_SPEC,
     TITLE_TAGS_SPEC,
@@ -202,6 +206,8 @@ _CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 # wait, so the failure is returned to the caller, which can split the work
 # into smaller calls instead. Fast failures keep the 2 s / 8 s backoff.
 _SLOW_FAILURE_SECONDS = 120.0
+# How often an open model call reports how far it has got on the live screen (LiveEmitter.model_progress).
+_PROGRESS_EVERY_SECONDS = 15.0
 
 
 def _strip_json_fence(content: str) -> str:
@@ -476,6 +482,48 @@ def _budget_detail(response: httpx.Response) -> str:
     return " ".join(text.split())[:500]
 
 
+def _approx_tokens(chars: int) -> int:
+    """About how many tokens `chars` characters of model output are (four characters a token): only shown to the user as progress."""
+    return max(1, round(chars / 4))
+
+
+class _QuietDisplay:
+    """The display of a streamed call that shows no items (every call that is not drafting): it only lets the call stream, so its
+    progress can be reported."""
+
+    def start(self) -> None: ...
+
+    def feed(self, text: str) -> None: ...
+
+    def reset(self) -> None: ...
+
+    def end(self) -> None: ...
+
+
+@contextmanager
+def _beating(prompt: str, stage: str):  # noqa: ANN202
+    """While a plain (not streamed) model call is open, reports every _PROGRESS_EVERY_SECONDS that it is still working, so a long
+    call never looks stuck. Elapsed time only: a plain call says nothing about its output until it ends. No-op without a live screen."""
+    emitter = live_emitter_for(current_job_id()) if settings.live_progress else None
+    if emitter is None:
+        yield
+        return
+    stop = threading.Event()
+    started = time.monotonic()
+
+    def beat() -> None:
+        while not stop.wait(max(_PROGRESS_EVERY_SECONDS, 0.05)):
+            emitter.model_progress(prompt=prompt, stage=stage, elapsed_s=time.monotonic() - started, tokens=None)
+
+    thread = threading.Thread(target=beat, name="model-progress", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
 def _ledger_stage() -> str:
     """The pipeline stage a /llm/chat call belongs to, for the orchestrator's per-job token ledger: the name of the nearest
     public OrchestratorLlmClient method on the call stack (`score_requirements_for_document`, `propose_acceptance_criteria`, ...).
@@ -672,6 +720,18 @@ class OrchestratorLlmClient:
             **({"seed": self._seed} if self._seed is not None else {}),
         }
 
+    def _request_headers(self, user_id: str | None) -> dict[str, str]:
+        """The headers of every model call, plain or streamed: the bearer, the user whose connection is used, and inside a job the job and
+        stage, so the orchestrator adds the call's token usage to the job's ledger."""
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
+        job_id = current_job_id()
+        if job_id:
+            headers["X-Req2Ado-Job-Id"] = job_id
+            headers["X-Req2Ado-Stage"] = _ledger_stage()
+        return headers
+
     def _post_chat(self, call: PromptCall, params: dict, user_id: str | None) -> httpx.Response:
         """POSTs `call` with `params` to /llm/chat with a short, bounded retry for a transient
         backend error (429/5xx) only -- see _RETRYABLE_CHAT_STATUS_CODES'
@@ -695,18 +755,11 @@ class OrchestratorLlmClient:
         when falsy, mirroring how every other optional field in this
         module is conditionally included -- never sent as an empty
         string."""
-        payload = call.payload(params)
+        payload = call.payload(params, mark_cache=settings.llm_prompt_cache)
         logger.info("/llm/chat call: prompt=%s", call.identity)
         trace.get_current_span().set_attribute("req2ado.prompt", str(call.identity))
         response: httpx.Response | None = None
-        headers = {"Authorization": f"Bearer {self._bearer_token}"}
-        if user_id:
-            headers["X-Req2Ado-User-Id"] = user_id
-        # Names the job and stage so the orchestrator can add this call's token usage to the job's ledger. Only sent inside a job.
-        job_id = current_job_id()
-        if job_id:
-            headers["X-Req2Ado-Job-Id"] = job_id
-            headers["X-Req2Ado-Stage"] = _ledger_stage()
+        headers = self._request_headers(user_id)
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             raise_if_cancelled()  # a job whose caller is gone makes no further model calls
             with gated():  # a lease (when a gate is set) covers this one attempt, not the back-off sleep below; the wait for it is not "elapsed"
@@ -724,11 +777,12 @@ class OrchestratorLlmClient:
                         else (lambda: None)
                     )
                     try:
-                        response = client.post(
-                            f"{self._base_url}/llm/chat",
-                            json=payload,
-                            headers=headers,
-                        )
+                        with _beating(str(call.identity), headers.get("X-Req2Ado-Stage", "other")):
+                            response = client.post(
+                                f"{self._base_url}/llm/chat",
+                                json=payload,
+                                headers=headers,
+                            )
                     except Exception:
                         raise_if_cancelled()  # the closed connection surfaces as a transport error: report it as the cancel it is
                         raise
@@ -774,6 +828,24 @@ class OrchestratorLlmClient:
         assert response is not None  # loop always runs >=1 iteration
         return response
 
+    def _refused_stream(self, response: httpx.Response, elapsed: float) -> None:
+        """What a refused stream means, the same as the plain call (_post_chat): a spent budget stops the run; a refusal a retry
+        cannot change (a content filter, a bad request), a rate limit the orchestrator already waited out, or a failure after a long
+        wait is raised at once; only a quick, transient failure returns, so the plain call (with its retry ladder) is made instead."""
+        if response.status_code == 402 and _BUDGET_CODE in response.text:
+            token = current_token()
+            if token is not None:
+                detail = _budget_detail(response)
+                token.cancel(BUDGET_REASON, detail)
+                raise LlmBudgetExceeded(detail)
+            response.raise_for_status()
+        if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
+            response.raise_for_status()
+        if response.status_code == 429 and _RATE_LIMIT_RETRIED_CODE in response.text:
+            response.raise_for_status()
+        if elapsed >= _SLOW_FAILURE_SECONDS:
+            response.raise_for_status()
+
     def _chat_json_streaming(
         self,
         call: PromptCall,
@@ -794,50 +866,75 @@ class OrchestratorLlmClient:
         that proves the answer is complete."""
         raise_if_cancelled()
         logger.info("/llm/chat/stream call: prompt=%s", call.identity)
-        headers = {"Authorization": f"Bearer {self._bearer_token}"}
-        if user_id:
-            headers["X-Req2Ado-User-Id"] = user_id
+        # The same headers as the plain call (the job and stage put its tokens on the job's ledger).
+        headers = self._request_headers(user_id)
+        stage = headers.get("X-Req2Ado-Stage", "other")
+        emitter = live_emitter_for(current_job_id()) if settings.live_progress else None
         parts: list[str] = []
+        chars = 0
         finished = False
         got_output = False
         finish_reason: str | None = None
         try:
             timeout = self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS
-            with httpx.Client(transport=self._transport, timeout=timeout) as client:
-                with client.stream(
-                    "POST",
-                    f"{self._base_url}/llm/chat/stream",
-                    json={**call.payload(params), "includeDone": True},
-                    headers=headers,
-                ) as response:
-                    if response.is_error:
-                        notice("stream_fallback", reason="refused")
-                        return _NOT_STREAMED
-                    for line in response.iter_lines():
-                        if not line:
-                            continue
-                        got_output = True
-                        message = json.loads(line)
-                        if message.get("done"):
-                            finished = True
-                            finish_reason = message.get("finishReason")
-                            note_answered_by(_routed_model_of(message))
-                            if message.get("finishReason") == "length":
-                                logger.warning(
-                                    "Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete"
-                                )
-                                notice(
-                                    "output_limit_reached",
-                                    "warning",
-                                    with_last_item=True,
-                                    step="drafting",
-                                )
-                            continue
-                        delta = message.get("delta")
-                        if delta:
-                            parts.append(delta)
-                            display.feed(delta)
+            # As the plain call: the call gate's lease covers the request, and a cancelled run closes this connection, so the
+            # orchestrator stops the upstream generation instead of leaving the model busy for a job nobody is waiting for.
+            with gated(), httpx.Client(transport=self._transport, timeout=timeout) as client:
+                token = current_token()
+                unregister = token.on_cancel(lambda: _abort_in_flight(client)) if token is not None else (lambda: None)
+                started = time.monotonic()
+                last_beat = started
+                try:
+                    with client.stream(
+                        "POST",
+                        f"{self._base_url}/llm/chat/stream",
+                        json={**call.payload(params, mark_cache=settings.llm_prompt_cache), "includeDone": True},
+                        headers=headers,
+                    ) as response:
+                        if response.is_error:
+                            response.read()
+                            self._refused_stream(response, time.monotonic() - started)
+                            notice("stream_fallback", reason="refused")
+                            return _NOT_STREAMED
+                        for line in response.iter_lines():
+                            raise_if_cancelled()
+                            if not line:
+                                continue
+                            got_output = True
+                            message = json.loads(line)
+                            if message.get("done"):
+                                finished = True
+                                finish_reason = message.get("finishReason")
+                                note_answered_by(_routed_model_of(message))
+                                if message.get("finishReason") == "length":
+                                    logger.warning(
+                                        "Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete"
+                                    )
+                                    notice(
+                                        "output_limit_reached",
+                                        "warning",
+                                        with_last_item=True,
+                                        step="drafting",
+                                    )
+                                continue
+                            delta = message.get("delta")
+                            if delta:
+                                parts.append(delta)
+                                display.feed(delta)
+                                chars += len(delta)
+                                now = time.monotonic()
+                                if emitter is not None and now - last_beat >= _PROGRESS_EVERY_SECONDS:
+                                    last_beat = now
+                                    emitter.model_progress(
+                                        prompt=str(call.identity), stage=stage, elapsed_s=now - started, tokens=_approx_tokens(chars)
+                                    )
+                        raise_if_cancelled()
+                finally:
+                    unregister()
+        except httpx.HTTPStatusError:
+            raise  # a refusal a retry cannot change, already raised as the plain call would (see _refused_stream)
         except (httpx.HTTPError, ValueError) as exc:
+            raise_if_cancelled()  # a connection closed by a cancel surfaces as a transport error: report it as the cancel it is
             logger.warning("Streamed /llm/chat/stream call failed, using the plain call: %s", exc)
             notice("stream_fallback", reason="stream_error")
             if got_output:
@@ -871,18 +968,20 @@ class OrchestratorLlmClient:
         emitter. Otherwise this is exactly the plain call it always was. `params` comes from `_params`, built once by the caller
         so a cached call's key (`payload_key`) covers exactly the body sent."""
         self._last_call.identity = call.identity
-        emitter = (
-            live_emitter_for(current_job_id())
-            if stream_inputs is not None and settings.live_progress and settings.llm_stream_drafting
-            else None
-        )
-        if emitter is not None:
+        emitter = live_emitter_for(current_job_id()) if settings.live_progress else None
+        display: DraftingDisplay | _QuietDisplay | None = None
+        if emitter is not None and stream_inputs is not None and settings.llm_stream_drafting:
             display = DraftingDisplay(
                 emitter,
                 stream_inputs or {},
                 stage=stream_stage,
                 counter=current_stage_counter(),
             )
+        elif emitter is not None and settings.llm_stream_progress and params.get("budgetKind") != "study":
+            # Streamed only so the screen can show how far the call has got; a study call stays plain, because only the plain path
+            # turns a cut-off study answer into StudyLengthCutoff (the window is then split).
+            display = _QuietDisplay()
+        if display is not None:
             try:
                 display.start()
                 parsed = self._chat_json_streaming(call, params, user_id, display)
@@ -967,6 +1066,7 @@ class OrchestratorLlmClient:
         category_checklist: list[str] | None = None,
         user_id: str | None = None,
         standard_requires: frozenset[str] | None = None,
+        together: bool = False,
     ) -> dict[str, dict]:
         """Batched quality scoring: every node's FINAL description judged in one call per vote. The model returns a level (0-4, anchored
         in the prompt) per category with the words that support it, and the problems it finds with the words they concern; code turns
@@ -984,9 +1084,18 @@ class OrchestratorLlmClient:
 
         Each vote's raw answer is response-cached on its own exact request (a complete answer only), and the scores are computed after
         the cache, so a change to how code scores never serves an old result."""
-        spec = SCORING_SPEC
         if standard_requires is None:
             standard_requires = self.standard_requires
+        # A fixed category list (an organization's checklist, or the built-in categories): the model gives the levels by position, in the
+        # order the prompt names them, and code maps them back. The same functions name them in the prompt, so the orders agree. Categories
+        # derived from knowledge-base material are named by the model during the call: no order exists, so those stay named.
+        if category_checklist:
+            category_names: list[str] | None = _scoring_category_names(category_checklist)
+        elif kb_context is not None:
+            category_names = None
+        else:
+            category_names = [*builtin_categories(standard_requires), COMPLETENESS]
+        spec = SCORING_POSITIONAL_SPEC if category_names else SCORING_SPEC
         is_rubric = isinstance(kb_context, RubricText)
         policy = self.language_policy
         forms = policy.obligation_forms
@@ -1020,6 +1129,12 @@ class OrchestratorLlmClient:
                 "score_requirements_for_document",
                 markers={
                     "output_lead": output_lead(spec, mode),
+                    # v7 names the answer's fields from here (levels by position for a fixed list); an older file names them itself.
+                    **(
+                        {"answer_fields": "'levels' and 'findings'" if category_names else "'categories' and 'findings'"}
+                        if resolve_version("score_requirements_for_document") >= 7
+                        else {}
+                    ),
                     "category_instruction": _scoring_category_fragment(
                         category_checklist, kb_context, standard_requires
                     ),
@@ -1096,8 +1211,8 @@ class OrchestratorLlmClient:
                 parsed = drop_possibly_cut_last_entry(parsed)
             return parsed
 
-        def vote(number: int) -> dict:
-            ordered = list(descriptions_by_node_id.items())
+        def vote(number: int, items: dict[str, str] | None = None) -> dict:
+            ordered = list((descriptions_by_node_id if items is None else items).items())
             batch = dict(reversed(ordered) if number % 2 else ordered)
             key = None
             if self._cache is not None:
@@ -1114,15 +1229,27 @@ class OrchestratorLlmClient:
                 self._cache.set(key, dict(entries))
             return dict(entries)
 
-        votes: list[dict] = []
-        for number in range(SCORING_VOTES):
+        votes: list[dict] = [vote(0)]  # the first vote failing is the call failing: the caller's split-and-retry handles it
+        # The second vote (the same items in reverse order) only for the items a single level step could change: the rest are decided by
+        # the first vote, and asking them again was half of every scoring call's output.
+        borderline = {
+            node_id: text
+            for node_id, text in descriptions_by_node_id.items()
+            if needs_second_vote(
+                votes[0].get(node_id), requires=standard_requires, builtin=not category_checklist, names=category_names
+            )
+        }
+        if together and borderline:
+            # Texts that are compared (a rewrite's before and after) are always read by the same votes, so their scores stay comparable.
+            borderline = dict(descriptions_by_node_id)
+        for number in range(1, SCORING_VOTES):
+            if not borderline:
+                break
             try:
-                votes.append(vote(number))
+                votes.append(vote(number, borderline))
             except JobCancelled:
                 raise
             except Exception:
-                if number == 0:
-                    raise  # the first vote failing is the call failing: the caller's split-and-retry handles it
                 logger.warning(
                     "score_requirements_for_document: vote %d failed; confidence comes from one vote",
                     number,
@@ -1136,6 +1263,7 @@ class OrchestratorLlmClient:
                 text,
                 requires=standard_requires,
                 builtin=not category_checklist,
+                names=category_names,
             )
             if entry is not None:
                 # One tag per model whose vote went into the entry: votes a router sent to different models are both recorded.
@@ -1535,6 +1663,23 @@ class OrchestratorLlmClient:
         parsed = self._chat_json(
             call,
             self._params(schema=document_study_schema(), max_tokens=3000, budget_kind="study"),
+            user_id=user_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return parsed
+
+    def orient_document(self, outline: str, first_window: str, user_id: str | None = None) -> dict:
+        """Backs the Study (app.leveling.study): what kind of document this is, its purpose, the system it specifies and its conventions,
+        a sentence each, from its outline and its first window. Background only: the caller clips the fields and never takes a value from
+        them. Not cached here: the caller caches the whole Study. Written in the language of the document's own text (the first window's
+        script), as every prompt that writes text is."""
+        source = json.dumps({"outline": outline, "text": first_window}, ensure_ascii=False)
+        after, _ = self._language(script=dominant_script(first_window))
+        call = build_call("orient_document", blocks=[DataBlock("source", source)], after=after)
+        parsed = self._chat_json(
+            call,
+            self._params(schema=document_orientation_schema(), max_tokens=800, budget_kind="study"),
             user_id=user_id,
         )
         if not isinstance(parsed, dict):

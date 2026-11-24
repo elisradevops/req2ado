@@ -314,5 +314,5 @@ def test_the_scoring_category_text_is_a_prompt_file_counted_in_the_identity() ->
         )
 
     fixed, builtin = scoring(["Necessary"]), scoring(None)
-    assert "2 entries in total" in fixed.system and "EXACTLY 4" in builtin.system
+    assert "EXACTLY 2 integers" in fixed.system and "EXACTLY 4" in builtin.system
     assert fixed.identity.sha256 != builtin.identity.sha256

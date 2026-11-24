@@ -70,6 +70,8 @@ interface LiveRunState {
   recent: FinishedItem[];
   compare: { payload: ComparePayload; seq: number; receivedAt: number } | null;
   heartbeat: HeartbeatState | null;
+  /** How far the open model call has got (the server's model_progress frames): elapsed seconds and about how many tokens. */
+  modelProgress: { prompt: string; stage: string; elapsedS: number; tokens: number | null; receivedAt: number } | null;
   /** What changed the run (typed notices), one per kind. Low volume, so applied at once. */
   notices: Notice[];
   /** True once any progress or live event has arrived: the server has the feature on. */
@@ -113,6 +115,7 @@ const EMPTY = {
   recent: [],
   compare: null,
   heartbeat: null,
+  modelProgress: null,
   notices: [],
   active: false,
   lastEventAt: null,
@@ -205,6 +208,7 @@ export const useLiveRunStore = create<LiveRunState>((set, get) => ({
     let recent = state.recent;
     let compare = state.compare;
     let heartbeat = state.heartbeat;
+    let modelProgress = state.modelProgress;
     let activityAt = state.activityAt;
     for (const entry of batch) {
       if (entry.kind !== 'heartbeat') activityAt = now;
@@ -233,6 +237,15 @@ export const useLiveRunStore = create<LiveRunState>((set, get) => ({
           }
         } else if (frame.kind === 'compare') {
           if (frame.compare) compare = { payload: frame.compare, seq: frame.seq, receivedAt: now };
+        } else if (frame.kind === 'model_progress') {
+          // Never an item lane: it would show as "working on" with nothing named.
+          modelProgress = {
+            prompt: frame.prompt ?? '',
+            stage: frame.stage ?? '',
+            elapsedS: frame.elapsedS ?? 0,
+            tokens: frame.tokens ?? null,
+            receivedAt: now,
+          };
         } else {
           lanes = {
             ...lanes,
@@ -260,6 +273,7 @@ export const useLiveRunStore = create<LiveRunState>((set, get) => ({
       recent,
       compare,
       heartbeat,
+      modelProgress,
       active: true,
       lastEventAt: now,
       activityAt,

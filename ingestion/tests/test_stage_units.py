@@ -41,6 +41,17 @@ def test_figure_without_a_known_total_has_no_units() -> None:
     assert units_from_progress(_p("describe_figure", figure_index=3)) is None
 
 
+
+def test_study_windows_count_the_study_stage() -> None:
+    units = units_from_progress(_p("study_window", blocks_done=3, blocks_total=10))
+    assert (units.stage, units.unit, units.done, units.total, units.complete) == ("study", "windows", 3, 10, False)
+    last = units_from_progress(_p("study_window", blocks_done=10, blocks_total=10))
+    assert last.complete
+
+
+def test_a_study_with_nothing_to_read_has_no_units() -> None:
+    assert units_from_progress(_p("study_window", blocks_done=0, blocks_total=0)) is None
+
 def test_parse_done_completes_the_parse_stage() -> None:
     units = units_from_progress(_p("parse_done", figure_count=35, block_count=412))
     assert (units.stage, units.done, units.total, units.complete) == ("parse", 35, 35, True)

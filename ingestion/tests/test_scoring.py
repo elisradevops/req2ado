@@ -45,7 +45,7 @@ class _FakeScoringClient:
         criteria_context=None,
         kb_context=None,
         category_checklist=None,
-        user_id=None,
+        user_id=None, together=False,
     ):
         self.calls.append(
             (descriptions_by_node_id, criteria_context, kb_context, category_checklist)
@@ -347,7 +347,7 @@ def test_score_all_requirements_runs_chunks_concurrently() -> None:
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             with lock:
                 seen.add(threading.current_thread().name)
@@ -379,7 +379,7 @@ def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> No
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
@@ -432,7 +432,7 @@ def test_score_all_requirements_narrates_chunks_in_document_order_under_concurre
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
@@ -477,7 +477,7 @@ def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             if "r150" in descriptions_by_node_id:
                 raise RuntimeError("boom")
@@ -523,7 +523,7 @@ class _CanaryObservingClient:
         criteria_context=None,
         kb_context=None,
         category_checklist=None,
-        user_id=None,
+        user_id=None, together=False,
     ) -> dict[str, dict]:
         self.batches.append(dict(descriptions_by_node_id))
         return {
@@ -621,7 +621,7 @@ def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             return {"n1": {"score": 90, "issues": [], "categoryScores": {"clarity": 90}}}
 
@@ -647,7 +647,7 @@ def test_score_all_requirements_splits_a_timed_out_chunk_and_scores_every_node()
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             calls.append(len(descriptions_by_node_id))
             # Real batches carry the canary too, so only a call big enough to
@@ -678,7 +678,7 @@ def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> 
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             if (
                 len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6
@@ -771,7 +771,7 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             calls.append(len(descriptions_by_node_id))
             if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
@@ -796,7 +796,7 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             calls.append(len(descriptions_by_node_id))
             raise _http_status_error(401)
@@ -820,7 +820,7 @@ def test_a_400_scoring_failure_is_retried_as_two_halves_and_the_survivor_half_is
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             calls.append(len(descriptions_by_node_id))
             if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:

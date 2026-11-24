@@ -68,7 +68,7 @@
       }
     },
     "StageName": {
-      "enum": ["parse", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "trace", "criteria", "dedup", "write_ado"]
+      "enum": ["parse", "study", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "trace", "criteria", "dedup", "write_ado"]
     },
     "StageUnits": {
       "type": "object",
@@ -78,7 +78,7 @@
       "properties": {
         "type": { "const": "units" },
         "stage": { "$ref": "#/definitions/StageName" },
-        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "unit": { "enum": ["figures", "pages", "windows", "items", "sections", "requirements", "passes"] },
         "done": { "type": "integer", "minimum": 0 },
         "total": { "type": "integer", "minimum": 0 },
         "complete": { "type": "boolean" },
@@ -99,7 +99,7 @@
         "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per job; clients drop frames older than the newest seen." },
         "pct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Never decreases within a job." },
         "stage": { "$ref": "#/definitions/StageName" },
-        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "unit": { "enum": ["figures", "pages", "windows", "items", "sections", "requirements", "passes"] },
         "done": { "type": "integer", "minimum": 0 },
         "total": { "type": "integer", "minimum": 0 },
         "estimated": { "type": "boolean", "description": "True while the stage weights are the shipped defaults rather than calibrated from past runs." },
@@ -134,8 +134,8 @@
       "properties": {
         "type": { "const": "live" },
         "seq": { "type": "integer", "minimum": 0 },
-        "lane": { "type": "integer", "minimum": 0, "description": "Concurrent chunks or branches each have their own lane." },
-        "kind": { "enum": ["working_on", "writing", "item", "compare", "ocr_page", "reset"] },
+        "lane": { "type": "integer", "minimum": -1, "description": "Concurrent chunks or branches each have their own lane (0 and up). Lane -1 carries model_progress frames only, so they never replace an item lane's latest frame." },
+        "kind": { "enum": ["working_on", "writing", "item", "compare", "ocr_page", "reset", "model_progress"] },
         "ref": { "type": ["string", "null"], "description": "Map item or group this frame is about." },
         "title": { "type": ["string", "null"], "maxLength": 200, "description": "Title of the work item as written so far." },
         "itemType": { "type": ["string", "null"], "description": "Epic, Feature or Requirement." },
@@ -145,6 +145,10 @@
         "compare": { "anyOf": [{ "$ref": "#/definitions/ComparePayload" }, { "type": "null" }] },
         "page": { "type": ["integer", "null"], "minimum": 1 },
         "pages": { "type": ["integer", "null"], "minimum": 1 },
+        "prompt": { "type": "string", "maxLength": 200, "description": "model_progress only: the prompt of the open model call (a code-made name, never document text)." },
+        "stage": { "type": "string", "maxLength": 200, "description": "model_progress only: the pipeline stage of the call (the token ledger's stage name)." },
+        "elapsedS": { "type": "number", "minimum": 0, "description": "model_progress only: seconds since the call was sent." },
+        "tokens": { "type": ["integer", "null"], "minimum": 0, "description": "model_progress only: about how many tokens the model has written so far; null when the call does not stream." },
         "emittedAt": { "type": "string" }
       }
     },

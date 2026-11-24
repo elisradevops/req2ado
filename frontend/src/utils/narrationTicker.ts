@@ -50,6 +50,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   regroup_roots: 'Grouping by topic.',
   infer_trace_links: 'Resolving trace links.',
   page_alignment: 'Deriving real page numbers for the source document.',
+  study_window: 'Studying the whole document.',
   dedup_check: 'Checking for existing/duplicate work items.',
   writing: 'Writing to Azure DevOps.',
   primer: 'Reading the whole document to understand it.',
@@ -132,6 +133,8 @@ function counterFor(latest: NarrationEvent | null): string | null {
       return latest.currentTitle ? latest.currentTitle : latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
     case 'writing':
       return latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
+    case 'study_window':
+      return latest.blocksTotal > 0 ? `Part ${Math.min(latest.blocksDone + 1, latest.blocksTotal)} of ${latest.blocksTotal}` : null;
     case 'primer':
       return latest.elapsedSeconds != null ? `${Math.floor(latest.elapsedSeconds / 60)}:${String(latest.elapsedSeconds % 60).padStart(2, '0')}` : null;
     case 'job_failed':

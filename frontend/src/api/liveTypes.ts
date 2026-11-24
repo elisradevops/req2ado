@@ -6,6 +6,7 @@
 
 export const STAGE_NAMES = [
   'parse',
+  'study',
   'draft',
   'improve',
   'summarize',
@@ -21,10 +22,10 @@ export const STAGE_NAMES = [
 ] as const;
 export type StageName = (typeof STAGE_NAMES)[number];
 
-export const PROGRESS_UNITS = ['figures', 'pages', 'items', 'sections', 'requirements', 'passes'] as const;
+export const PROGRESS_UNITS = ['figures', 'pages', 'windows', 'items', 'sections', 'requirements', 'passes'] as const;
 export type ProgressUnit = (typeof PROGRESS_UNITS)[number];
 
-export const LIVE_KINDS = ['working_on', 'writing', 'item', 'compare', 'ocr_page', 'reset'] as const;
+export const LIVE_KINDS = ['working_on', 'writing', 'item', 'compare', 'ocr_page', 'reset', 'model_progress'] as const;
 export type LiveKind = (typeof LIVE_KINDS)[number];
 
 export const COMPARE_KINDS = ['conflict', 'duplicate'] as const;
@@ -82,6 +83,12 @@ export interface LiveFrame {
   compare?: ComparePayload | null;
   page?: number | null;
   pages?: number | null;
+  /** model_progress only: how far one open model call has got (its own lane, never an item lane). */
+  prompt?: string;
+  stage?: string;
+  elapsedS?: number;
+  /** About how many tokens the model has written so far; null when the call does not stream. */
+  tokens?: number | null;
   emittedAt: string;
 }
 

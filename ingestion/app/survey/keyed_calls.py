@@ -64,6 +64,14 @@ class KeyedSpec:
     id_noun: str = "row id"
     legacy_schema: Callable[[], dict] | None = None
     legacy_output: str | None = None
+    # Other field names that still make an entry an answer (not a cut-off fragment): an older form of the entry the caller can still read,
+    # e.g. scoring's named categories beside its levels by position. Only the "is this an answer" check reads it; the prompt and the
+    # schema describe `fields`.
+    also_answers: tuple[str, ...] = ()
+
+    @property
+    def answer_fields(self) -> tuple[str, ...]:
+        return (*self.fields, *self.also_answers)
 
     def __post_init__(self) -> None:
         if set(self.fields) != set(self.field_prompts):
@@ -455,7 +463,7 @@ def run_keyed(
     send = _noting_answering_model(send, model)
     raw = send(dict(payload), mode)
     failed_by = answered_by() or model
-    parsed = normalize_keyed_result(raw, ids, spec.fields)
+    parsed = normalize_keyed_result(raw, ids, spec.answer_fields)
     first = _accepted(parsed, accept, label, ids)
     extra_calls = 0
     degraded = False
@@ -463,7 +471,7 @@ def run_keyed(
     if mode == "array" and not _usable(parsed, ids):
         extra_calls += 1
         fallback_raw = send(dict(payload), "none")
-        fallback_parsed = normalize_keyed_result(fallback_raw, ids, spec.fields)
+        fallback_parsed = normalize_keyed_result(fallback_raw, ids, spec.answer_fields)
         fallback = _accepted(fallback_parsed, accept, label, ids)
         if _usable(fallback_parsed, ids):
             # Under a router, what failed is the model the schema call was sent to; `Auto` itself is degraded only when the answer
@@ -489,7 +497,7 @@ def run_keyed(
             payload,
             lambda subset: send(subset, mode),
             f"{spec.name} keyed call",
-            spec.fields,
+            spec.answer_fields,
             accept,
         )
     )

@@ -68,3 +68,14 @@ describe('redactMessages', () => {
     expect(result[0].content).toBe('contact <redacted>');
   });
 });
+
+describe('redactMessages with cache parts', () => {
+  it('redacts each part of a message on its own and keeps its content the parts joined', () => {
+    const [message] = redactMessages([
+      { role: 'user', content: 'Mail alice@example.com\n\n<source>x</source>', parts: [{ text: 'Mail alice@example.com', cache: true }, { text: '\n\n<source>x</source>' }] },
+    ]);
+    expect(message.parts?.[0].text).not.toContain('alice@example.com');
+    expect(message.parts?.[0].cache).toBe(true);
+    expect(message.content).toBe(message.parts!.map((p) => p.text).join(''));
+  });
+});

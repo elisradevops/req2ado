@@ -52,6 +52,7 @@ const NARRATION_KEY: Record<NarrationEvent['phase'], LifecycleKey | null> = {
   parse_done: 'parse',
   table_detected: 'parse',
   page_alignment: 'parse',
+  study_window: 'parse',
   preparing_analysis: 'analyze',
   deterministic_subtree: 'analyze',
   build_skeleton: 'analyze',
@@ -73,6 +74,7 @@ const NARRATION_KEY: Record<NarrationEvent['phase'], LifecycleKey | null> = {
 
 const COUNTED_KEY: Record<StageName, LifecycleKey> = {
   parse: 'parse',
+  study: 'parse',
   draft: 'analyze',
   improve: 'analyze',
   summarize: 'analyze',

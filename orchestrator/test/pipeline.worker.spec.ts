@@ -87,7 +87,7 @@ describe('runPipelineJob', () => {
     // Trailing undefined is ocrLanguages (deps has no ocrLanguages set here)
     // -- see the dedicated NEW-04 test below for the real-value case.
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal));
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal));
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, proposal: null }]);
   });
 
@@ -298,7 +298,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   it('sends the rulebook stored for the file to /level on the document, in BASELINE too, and leaves the document alone when there is none', async () => {
@@ -432,7 +432,7 @@ describe('runPipelineJob', () => {
       ],
       'gemma4:12b',
       'job-1',
-      undefined,
+      undefined, undefined, expect.any(AbortSignal),
     );
   });
 
@@ -1664,7 +1664,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', 'user-descriptor-1', [], 'gemma4:12b', 'job-1', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', 'user-descriptor-1', [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   it('passes undefined (not null) to ingestionClient.level when job.userId is null', async () => {
@@ -1687,7 +1687,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   it("passes job.model through to ingestionClient.level as the 6th argument", async () => {
@@ -1710,7 +1710,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'qwen2.5:1.5b', 'job-1', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'qwen2.5:1.5b', 'job-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   it("resolves an unset job.model to the SUBMITTING USER'S OWN default chat model, not deps.defaultLlmModel -- a stale global default here would size ingestion's /level caps budget for a different model than the one the real per-user chat() call actually uses", async () => {
@@ -1740,7 +1740,7 @@ describe('runPipelineJob', () => {
 
     expect(getClientFor).toHaveBeenCalledWith('user-1');
     expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-      { blocks: [] }, 'survey', 'user-1', [], 'per-user-default-model', 'job-1', undefined,
+      { blocks: [] }, 'survey', 'user-1', [], 'per-user-default-model', 'job-1', undefined, undefined, expect.any(AbortSignal),
     );
     expect(fakePrisma.job.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ model: 'per-user-default-model' }) }),
@@ -1770,7 +1770,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-      { blocks: [] }, 'survey', 'user-1', [], 'stale-global-default', 'job-1', undefined,
+      { blocks: [] }, 'survey', 'user-1', [], 'stale-global-default', 'job-1', undefined, undefined, expect.any(AbortSignal),
     );
   });
 
@@ -1794,7 +1794,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-xyz', undefined);
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-xyz', undefined, undefined, expect.any(AbortSignal));
   });
 
   it("persists the tree's kb_citations onto the Job row alongside dryRunDiff, mapped to camelCase", async () => {
@@ -2765,6 +2765,44 @@ describe('runPipelineJob', () => {
       expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
     });
 
+    it('aborts an in-flight level call as soon as the job is cancelled, so ingestion stops calling the model', async () => {
+      // The /level call is the long one (a SURVEY run's scoring): a cancel that waited for it to return kept the model busy for its whole length.
+      let levelSignal: AbortSignal | undefined;
+      let levelStarted = false;
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockImplementation(
+        (...args: unknown[]) =>
+          new Promise((_resolve, reject) => {
+            levelStarted = true;
+            levelSignal = args[8] as AbortSignal;
+            levelSignal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+          }),
+      );
+      fakePrisma.job.findUnique.mockImplementation(async () => ({ status: levelStarted ? 'cancelled' : 'running' }));
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          cancelPollMs: 20,
+        },
+      );
+
+      expect(result).toEqual([]);
+      expect(levelSignal?.aborted).toBe(true);
+      expect(fakeDryRunService.diff).not.toHaveBeenCalled();
+      expect(fakePrisma.job.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'failed' } }));
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+
     it('stops watching for a cancel once the ingest has finished', async () => {
       fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
       fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'n0', fidelity_hash: 'h', customer_id: null }] });
@@ -3292,6 +3330,176 @@ describe('runPipelineJob', () => {
     });
   });
 
+  describe('the Study phase (STUDY_PHASE)', () => {
+    const parsed = { blocks: [{ id: 'b0' }], figures: [{ id: 'f0', caption: null, name: null }], vision_active: true };
+    const captioned = { ...parsed, figures: [{ id: 'f0', caption: 'a wiring diagram', name: null }] };
+    const theStudy = { version: 'v1', orientation: { document_type: 'An ICD', purpose: '', system: '', conventions: '' } };
+    const job = { id: 'job-s', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey' as const, fileBuffer: Buffer.from('text'), filename: 'x.docx' };
+
+    function run(client: Record<string, jest.Mock>, studyPhase: boolean | undefined) {
+      return runPipelineJob(job, {
+        ingestionClient: client as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
+        primerCacheRedis: fakePrimerCacheRedis as any,
+        ...(studyPhase === undefined ? {} : { studyPhase }),
+      });
+    }
+
+    function client(overrides: Record<string, jest.Mock> = {}) {
+      return {
+        ...fakeIngestionClient,
+        ingest: jest.fn().mockResolvedValue(parsed),
+        level: jest.fn().mockResolvedValue({ nodes: [] }),
+        study: jest.fn().mockResolvedValue(theStudy),
+        captions: jest.fn().mockResolvedValue(captioned),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+    });
+
+    it('reads the document once, captions its figures with the Study, and gives /level the Study instead of a primer', async () => {
+      const ingestion = client();
+      await run(ingestion, true);
+
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled(); // no primer
+      expect(ingestion.ingest.mock.calls[0].at(-1)).toBe(true); // captions deferred
+      expect(ingestion.study).toHaveBeenCalledWith(parsed, { userId: 'user-1', model: 'gemma4:12b', jobId: 'job-s', signal: expect.any(AbortSignal) });
+      expect(ingestion.captions).toHaveBeenCalledWith(parsed, 'job-s', expect.objectContaining({ study: theStudy, userId: 'user-1' }));
+      expect(ingestion.level).toHaveBeenCalledWith(
+        { ...captioned, study: theStudy }, 'survey', 'user-1', [], 'gemma4:12b', 'job-s', undefined, undefined, expect.any(AbortSignal),
+      );
+    });
+
+    it('writes no captions when vision did not run for the document', async () => {
+      const ingestion = client({ ingest: jest.fn().mockResolvedValue({ ...parsed, vision_active: false }) });
+      await run(ingestion, true);
+      expect(ingestion.captions).not.toHaveBeenCalled();
+      expect(ingestion.level.mock.calls[0][0]).toEqual({ ...parsed, vision_active: false, study: theStudy });
+    });
+
+    it('carries on without a Study when it cannot be read: /level then studies the document itself', async () => {
+      const ingestion = client({ study: jest.fn().mockRejectedValue(new Error('ingestion down')) });
+      await run(ingestion, true);
+      expect(ingestion.captions).toHaveBeenCalledWith(parsed, 'job-s', expect.objectContaining({ study: null }));
+      expect(ingestion.level.mock.calls[0][0]).toEqual(captioned); // no study on the document
+    });
+
+    it('marks every figure as not described when the captions cannot be written', async () => {
+      const ingestion = client({ captions: jest.fn().mockRejectedValue(new Error('vision down')) });
+      await run(ingestion, true);
+      const leveled = ingestion.level.mock.calls[0][0];
+      expect(leveled.figures).toEqual([{ id: 'f0', caption: null, name: null, caption_status: 'vision_failed' }]);
+      expect(leveled.study).toEqual(theStudy);
+    });
+
+    it('follows the progress from before the Study through /level, and stops following it once', async () => {
+      const order: string[] = [];
+      const stop = jest.fn().mockImplementation(async () => void order.push('stop'));
+      const progressService = { track: jest.fn().mockImplementation(async () => (order.push('track'), stop)), record: jest.fn(), finish: jest.fn() };
+      const ingestion = client({
+        study: jest.fn().mockImplementation(async () => (order.push('study'), theStudy)),
+        level: jest.fn().mockImplementation(async () => (order.push('level'), { nodes: [] })),
+      });
+      await runPipelineJob(job, {
+        ingestionClient: ingestion as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        progressService: progressService as any,
+        studyPhase: true,
+      });
+      expect(order).toEqual(['track', 'study', 'level', 'stop']);
+    });
+
+    it('reads the Study for a BASELINE job of a connected user and captions its figures, but not for one with no connection', async () => {
+      const baselineParsed = { ...parsed, vision_active: false, vision_skip_reason: 'baseline_mode' };
+      const runBaseline = (connected: boolean) => {
+        const ingestion = client({ ingest: jest.fn().mockResolvedValue(baselineParsed) });
+        const getClientFor = connected ? jest.fn().mockResolvedValue(fakeOpenWebUiClient) : jest.fn().mockRejectedValue(new Error('no connection'));
+        return runPipelineJob({ ...job, mode: 'baseline' }, {
+          ingestionClient: ingestion as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClientFactory: { getClientFor } as any,
+          studyPhase: true,
+        }).then(() => ingestion);
+      };
+      const connected = await runBaseline(true);
+      expect(connected.study).toHaveBeenCalled();
+      expect(connected.captions).toHaveBeenCalledWith(baselineParsed, 'job-s', expect.objectContaining({ study: theStudy }));
+      const unconnected = await runBaseline(false);
+      expect(unconnected.study).not.toHaveBeenCalled();
+      expect(unconnected.captions).not.toHaveBeenCalled();
+    });
+
+    it('says once, for the job, when the Study could not be read or read only part of the document', async () => {
+      const warningsOf = async (study: jest.Mock) => {
+        fakePrisma.job.update.mockClear();
+        await run(client({ study }), true);
+        const saved = fakePrisma.job.update.mock.calls.map(([arg]: any[]) => arg?.data?.warnings).find(Boolean) ?? [];
+        return (saved as { kind: string; raw: string }[]).filter((w) => w.kind === 'document_study_incomplete');
+      };
+      expect(await warningsOf(jest.fn().mockRejectedValue(new Error('down')))).toEqual([
+        expect.objectContaining({ raw: 'The document could not be studied, so this job ran without the context it gives.' }),
+      ]);
+      const partial = { ...theStudy, stats: { windows_studied: 3, windows_total: 10, orientation_failed: false } };
+      expect(await warningsOf(jest.fn().mockResolvedValue(partial))).toEqual([
+        expect.objectContaining({ raw: 'The document study read 3 of 10 parts of the document.' }),
+      ]);
+      const whole = { ...theStudy, stats: { windows_studied: 10, windows_total: 10, orientation_failed: false } };
+      expect(await warningsOf(jest.fn().mockResolvedValue(whole))).toEqual([]);
+    });
+
+    it('reads the Study with the rulebook /level builds from', async () => {
+      const ingestion = client();
+      await runPipelineJob({ ...job, fileRulebook: { tables: { t0: {} } }, fileRulebookHash: 'h' } as any, {
+        ingestionClient: ingestion as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        studyPhase: true,
+      });
+      expect(ingestion.study.mock.calls[0][0]).toEqual({ ...parsed, rulebook: { tables: { t0: {} } } });
+    });
+
+    it('is off unless switched on: a SURVEY job runs the primer path exactly as before', async () => {
+      const ingestion = client();
+      await run(ingestion, undefined);
+      expect(ingestion.study).not.toHaveBeenCalled();
+      expect(ingestion.captions).not.toHaveBeenCalled();
+      expect(ingestion.ingest.mock.calls[0]).toHaveLength(11); // no defer flag
+      expect(ingestion.level.mock.calls[0][0]).toEqual(parsed);
+    });
+  });
+
   describe('whole-document primer (Phase 6c)', () => {
     // No document-size gate any more (Task 4) -- bigDoc/bigFileBuffer are
     // kept only as a realistic fixture for tests that don't care about
@@ -3330,7 +3538,7 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.', undefined, expect.any(AbortSignal),
       );
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf', expect.any(AbortSignal)); // abortable: a cancel or the budget stops it
       // chatWithFullFileContext, NOT chat() -- chat() goes through the
@@ -3374,7 +3582,7 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal),
       );
     });
 
@@ -3400,7 +3608,7 @@ describe('runPipelineJob', () => {
 
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'cached primer text',
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'cached primer text', undefined, expect.any(AbortSignal),
       );
     });
 
@@ -3419,7 +3627,7 @@ describe('runPipelineJob', () => {
       const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf', structureHint: 'HINT: 4 sections, baseline builds 1 Epics.' };
 
       await runPipelineJob(job as any, deps as any); // no primer wired
-      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'HINT: 4 sections, baseline builds 1 Epics.');
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'HINT: 4 sections, baseline builds 1 Epics.', undefined, expect.any(AbortSignal));
 
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
@@ -3427,7 +3635,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
       await runPipelineJob(job as any, { ...deps, openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any, primerCacheRedis: fakePrimerCacheRedis as any } as any);
       expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(
-        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.\n\nHINT: 4 sections, baseline builds 1 Epics.',
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.\n\nHINT: 4 sections, baseline builds 1 Epics.', undefined, expect.any(AbortSignal),
       );
     });
 
@@ -3440,7 +3648,7 @@ describe('runPipelineJob', () => {
           adoCredentialResolver: fakeAdoCredentialResolver as any, defaultLlmModel: 'gemma4:12b',
         } as any,
       );
-      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal));
     });
 
     it('never attempts the primer for a BASELINE job, even with primer deps wired and a large document -- BASELINE never calls an LLM', async () => {
@@ -3464,7 +3672,7 @@ describe('runPipelineJob', () => {
       expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal),
       );
     });
 
@@ -3576,7 +3784,7 @@ describe('runPipelineJob', () => {
 
       // Still fails open -- the job itself is unaffected.
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined, undefined, expect.any(AbortSignal),
       );
     });
 
@@ -3613,7 +3821,7 @@ describe('runPipelineJob', () => {
 
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [{ id: 'b0', text: 'x' }] }, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+        { blocks: [{ id: 'b0', text: 'x' }] }, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.', undefined, expect.any(AbortSignal),
       );
     });
 

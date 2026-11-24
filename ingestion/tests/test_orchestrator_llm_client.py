@@ -856,9 +856,14 @@ def test_score_requirements_for_document_schema_allows_dynamic_category_scores()
     client.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})
 
     entry_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
-    assert "categories" in entry_schema["required"]
+    # The built-in categories are a fixed list: their levels come by position, integers whose 0-4 range and count code checks.
+    assert "levels" in entry_schema["required"]
+    assert entry_schema["properties"]["levels"] == {"type": "array", "items": {"type": "integer"}}
+
+    # Categories derived from knowledge-base material are named by the model: the name is free text, the level an integer.
+    client.score_requirements_for_document({"0": "The unit shall survive a 1m drop."}, kb_context="Org quality guide.")
+    entry_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
     category = entry_schema["properties"]["categories"]["items"]["properties"]
-    # The category name is free text (an organization's own names), the level an integer whose 0-4 range code checks.
     assert category["name"] == {"type": "string"} and category["level"] == {"type": "integer"}
 
 
@@ -1000,7 +1005,7 @@ def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_dro
     prompt = captured["system_prompt"]
     assert "Decide the names ONCE" not in prompt
     assert "taking your category names from its checklist" not in prompt
-    assert "do not add, omit or rename any" in prompt
+    assert "one integer per name, in exactly that order, never fewer" in prompt
     assert "Necessary" in block_text(captured["user"], "category_names")
 
 

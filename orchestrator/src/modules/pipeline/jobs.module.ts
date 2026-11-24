@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { FileRulebookService } from './file-rulebook.service';
+import { StudyPreviewService } from './study-preview.service';
 import { JobsController, RESULT_CACHE_PROBE } from './jobs.controller';
 import { JobResultCache, ResultCacheProbe, kbVersionFor, releaseVersion, type ResultCacheStore } from './result-cache';
 import { DedupDecisionsController } from './dedup-decisions.controller';
@@ -49,6 +50,17 @@ const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
       useFactory: (prisma: PrismaClient, ingestion: IngestionHttpClient, clients: OpenWebUiClientFactory, config: ConfigService) =>
         new FileRulebookService(prisma, ingestion, clients, {
           attachFileForTables: config.get<boolean>('PRESTUDY_ATTACH_FILE_FOR_TABLES') === true,
+          ocrLanguages: config.get<string>('OCR_LANGUAGES'),
+        }),
+    },
+    {
+      // The wizard's Study step: the same switch, default model and OCR languages the pipeline worker reads (pipeline.processor.ts).
+      provide: StudyPreviewService,
+      inject: [IngestionHttpClient, OpenWebUiClientFactory, FileRulebookService, ConfigService],
+      useFactory: (ingestion: IngestionHttpClient, clients: OpenWebUiClientFactory, fileRulebooks: FileRulebookService, config: ConfigService) =>
+        new StudyPreviewService(ingestion, clients, fileRulebooks, {
+          enabled: config.get<boolean>('STUDY_PHASE') === true,
+          defaultModel: config.get<string>('LLM_CHAT_MODEL') ?? '',
           ocrLanguages: config.get<string>('OCR_LANGUAGES'),
         }),
     },

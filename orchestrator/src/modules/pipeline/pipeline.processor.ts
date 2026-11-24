@@ -92,6 +92,7 @@ const openWebUiGlobalConfig: OpenWebUiGlobalConfig = {
   LLM_BASE_URL: config.LLM_BASE_URL,
   LLM_CHAT_BASE_URL: config.LLM_CHAT_BASE_URL,
   LLM_SEND_SEED: config.LLM_SEND_SEED === 'true',
+  LLM_PROMPT_CACHE: config.LLM_PROMPT_CACHE === 'true',
   LLM_SEND_REASONING_EFFORT: config.LLM_SEND_REASONING_EFFORT === 'true',
   LLM_MODEL_HIDE_PATTERNS: config.LLM_MODEL_HIDE_PATTERNS,
   LLM_TRUSTED_LOCAL: config.LLM_TRUSTED_LOCAL,
@@ -159,6 +160,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     resultCache,
     settingsService,
     ocrLanguages: config.OCR_LANGUAGES,
+    studyPhase: config.STUDY_PHASE,
     primerOptions: {
       budgetSeconds: config.PRIMER_BUDGET_SECONDS,
       heartbeatSeconds: config.PRIMER_HEARTBEAT_SECONDS,

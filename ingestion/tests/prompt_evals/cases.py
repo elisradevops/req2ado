@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.language_policy import LanguagePolicy
+from app.leveling.score_levels import builtin_categories
 from app.leveling.trace_links import _link_target
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
@@ -168,16 +169,27 @@ _SCORE_TEXTS = {i: text for i, text, *_ in labels.SCORE_LABELS}
 
 
 def _score_reply(
-    levels: dict[str, tuple[int, int]], findings: dict[str, list[tuple[str, str]]] | None = None
+    levels: dict[str, tuple[int, int]],
+    findings: dict[str, list[tuple[str, str]]] | None = None,
+    positional: bool = True,
 ) -> str:
-    """A scoring answer as the model gives it: per item (level of every built-in quality category, completeness level). Code computes the
-    score (app.leveling.score_levels): the quality level's 0-100 score, gated by completeness."""
-    quality = ("clarity", "testability", "atomicity", "style", "rationale")
+    """A scoring answer as the model gives it: per item the levels by position (each built-in category the client asks for, then
+    completeness) -- or, `positional=False`, named categories, as for categories derived from knowledge-base material -- and the findings.
+    Code computes the score (app.leveling.score_levels): the quality level's 0-100 score, gated by completeness."""
+    quality = builtin_categories()
+
+    def judged(level: int, complete: int) -> dict:
+        if positional:
+            return {"levels": [level] * len(quality) + [complete]}
+        return {
+            "categories": [{"name": n, "level": level} for n in quality]
+            + [{"name": "completeness_as_requirement", "level": complete}]
+        }
+
     return _j(
         {
             i: {
-                "categories": [{"name": n, "level": level, "evidence": ""} for n in quality]
-                + [{"name": "completeness_as_requirement", "level": complete, "evidence": ""}],
+                **judged(level, complete),
                 "findings": [{"issue": f, "quote": q} for f, q in (findings or {}).get(i, [])],
             }
             for i, (level, complete) in levels.items()
@@ -198,7 +210,7 @@ def _check_scores(result: object) -> Checks:
 
 
 # Computed scores: good 100, fragment 12, vague 25, tbd 25, compound 50, good_he 75 (inside every labelled range) ...
-_SCORE_GOOD = _score_reply(
+_SCORE_GOOD_LEVELS = (
     {
         "good": (4, 4),
         "fragment": (2, 1),
@@ -213,6 +225,9 @@ _SCORE_GOOD = _score_reply(
         "compound": [("compound", "send it to the host within 1 s")],
     },
 )
+_SCORE_GOOD = _score_reply(*_SCORE_GOOD_LEVELS)
+# The injection cases pass knowledge-base text: their categories are derived from it, so the answer is named.
+_SCORE_GOOD_NAMED = _score_reply(*_SCORE_GOOD_LEVELS, positional=False)
 # ... and fragment 100, vague 75, tbd 100, compound 100, good_he 6 (outside them).
 _SCORE_BAD = _score_reply(
     {
@@ -235,7 +250,58 @@ def _check_score_injection(result: object) -> Checks:
     }
 
 
-_SCORE_INJECTED = _score_reply({i: (4, 4) for i in _SCORE_TEXTS})
+_SCORE_INJECTED = _score_reply({i: (4, 4) for i in _SCORE_TEXTS}, positional=False)
+
+# --- scoring with an organization's checklist (fixed category names, listed in order in <category_names>) ---------------------------
+
+_CHECKLIST = [
+    "Complete?", "Consistent?", "Correct level?", "Feasible?", "Modifiable?",
+    "Necessary?", "Singular?", "Traceable?", "Unambiguous?", "Verifiable?",
+]
+_CHECKLIST_NAMES = [*_CHECKLIST, "completeness_as_requirement"]
+
+
+def _checklist_reply(
+    levels: dict[str, tuple[int, int]], findings: dict[str, list[tuple[str, str]]] | None = None
+) -> str:
+    """A checklist scoring answer: per item the levels by position (every checklist category in order, then completeness)."""
+    return _j(
+        {
+            i: {
+                "levels": [level] * len(_CHECKLIST) + [complete],
+                "findings": [{"issue": f, "quote": q} for f, q in (findings or {}).get(i, [])],
+            }
+            for i, (level, complete) in levels.items()
+        }
+    )
+
+
+def _check_checklist_scores(result: object) -> Checks:
+    entry = lambda i: (result.get(i) or {}) if isinstance(result, dict) else {}  # noqa: E731
+    return {
+        "every_item": p.same_ids(result, _SCORE_TEXTS),
+        # Every category judged for every item: a category dropped, renamed or misplaced shows up here.
+        "all_categories": (
+            all(set(entry(i).get("categoryScores") or {}) == set(_CHECKLIST_NAMES) for i in _SCORE_TEXTS),
+            "an item is missing checklist categories",
+        ),
+        "good": p.within(entry("good").get("score"), 70, 100, "good score"),
+        "fragment": p.within(entry("fragment").get("score"), 0, 30, "fragment score"),
+        "vague_flagged": ("vague_term" in (entry("vague").get("issues") or []), "vague not flagged as vague_term"),
+        "tbd_flagged": (
+            bool({"placeholder", "open_item_tbd"} & set(entry("tbd").get("issues") or [])),
+            "tbd not flagged as open",
+        ),
+    }
+
+
+_CHECKLIST_GOOD = _checklist_reply(
+    {"good": (4, 4), "fragment": (2, 1), "vague": (1, 4), "tbd": (1, 4), "compound": (2, 4), "good_he": (3, 4)},
+    {"vague": [("vague_term", "user-friendly")], "tbd": [("placeholder", "TBD")]},
+)
+_CHECKLIST_BAD = _checklist_reply(
+    {"good": (4, 4), "fragment": (4, 4), "vague": (3, 4), "tbd": (4, 4), "compound": (4, 4), "good_he": (4, 4)}
+)
 
 # --- duplicate judges -------------------------------------------------------------------------------------------------------------
 
@@ -603,6 +669,45 @@ def _groups(*groups: list[str]) -> str:
     )
 
 
+# --- orient_document --------------------------------------------------------------------------------------------------------------
+
+_ORIENT_OUTLINE = "# 1 כללי\n# 2 דרישות ספק הכוח\n# 3 אימות"
+_ORIENT_WINDOW = (
+    "1 כללי\nמסמך זה מפרט את הדרישות לספק הכוח של מערכת המכ\"ם.\n"
+    "2 דרישות ספק הכוח\n2.1 ספק הכוח יקבל מתח כניסה של 28 וולט.\n2.2 ספק הכוח יסיים אתחול תוך 2 שניות.\n"
+)
+_ORIENT_FIELDS = ("document_type", "purpose", "system", "conventions")
+
+
+def _check_orientation(result: object) -> Checks:
+    fields = [result.get(f) for f in _ORIENT_FIELDS] if isinstance(result, dict) else []
+    texts = [f for f in fields if isinstance(f, str) and f.strip()]
+    return {
+        "fields": (len(fields) == 4 and all(isinstance(f, str) and len(f) <= 250 for f in fields), "missing or long field"),
+        "filled": (len(texts) >= 3, "fewer than three fields written"),
+        "hebrew": p.all_hebrew(texts),
+        "no_values": p.no_invented_values(texts, [_ORIENT_OUTLINE, _ORIENT_WINDOW]),
+    }
+
+
+_ORIENT_GOOD = _j(
+    {
+        "document_type": "מפרט דרישות מערכת",
+        "purpose": "מפרט את הדרישות לספק הכוח",
+        "system": "ספק הכוח של מערכת המכ\"ם",
+        "conventions": "דרישות ממוספרות בפורמט ספק הכוח יקבל או יסיים",
+    }
+)
+_ORIENT_BAD = _j(
+    {
+        "document_type": "System requirements specification",
+        "purpose": "Power supply requirements, 115 V input",
+        "system": "Radar power supply",
+        "conventions": "Numbered shall statements",
+    }
+)
+
+
 CASES: list[Case] = [
     Case(
         "author_content",
@@ -645,7 +750,7 @@ CASES: list[Case] = [
         "kb_injection",
         lambda c: c.score_requirements_for_document(_SCORE_TEXTS, kb_context=INJECTION),
         _check_score_injection,
-        [_SCORE_GOOD],
+        [_SCORE_GOOD_NAMED],
         [_SCORE_INJECTED],
         frozenset({"injection"}),
     ),
@@ -654,12 +759,30 @@ CASES: list[Case] = [
         "kb_injection_mild",
         lambda c: c.score_requirements_for_document(_SCORE_TEXTS, kb_context=MILD_INJECTION),
         _check_score_injection,
-        [_SCORE_GOOD],
+        [_SCORE_GOOD_NAMED],
         [_SCORE_INJECTED],
         frozenset({"injection"}),
     ),
+    Case(
+        "score_requirements_for_document",
+        "checklist_scores",
+        lambda c: c.score_requirements_for_document(_SCORE_TEXTS, category_checklist=_CHECKLIST),
+        _check_checklist_scores,
+        [_CHECKLIST_GOOD],
+        [_CHECKLIST_BAD],
+        frozenset({"labelled", "hebrew"}),
+    ),
     *[_pair_case(label) for label in labels.PAIR_LABELS],
     *[_parameter_pair_case(label) for label in labels.PARAMETER_PAIR_LABELS],
+    Case(
+        "orient_document",
+        "hebrew_document",
+        lambda c: c.orient_document(_ORIENT_OUTLINE, _ORIENT_WINDOW),
+        _check_orientation,
+        [_ORIENT_GOOD],
+        [_ORIENT_BAD],
+        frozenset({"hebrew"}),
+    ),
     Case(
         "infer_trace_links",
         "external_and_unfounded",

@@ -99,6 +99,8 @@ class Server:
 def live(monkeypatch):  # noqa: ANN001, ANN201
     monkeypatch.setattr(client_module.settings, "live_progress", True)
     monkeypatch.setattr(client_module.settings, "llm_stream_drafting", True)
+    # This file is about the drafting stream alone; streaming every other call for progress is tests/test_llm_stream_progress.py.
+    monkeypatch.setattr(client_module.settings, "llm_stream_progress", False)
     # live_context reads the same settings object
     redis = FakeRedis()
     return redis
