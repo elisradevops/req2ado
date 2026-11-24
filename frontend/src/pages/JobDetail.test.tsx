@@ -2220,7 +2220,7 @@ describe('JobDetail', () => {
     renderAt('job-8');
     const tools = await screen.findByRole('group', { name: 'Job tools' });
     const names = within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
-    expect(names).toEqual(['Download summary', 'Resubmit', 'Delete']);
+    expect(names).toEqual(['Download summary', 'Resubmit', 'Delete']); // no items yet, so no items CSV
     expect(within(tools).queryByRole('button', { name: /reject|write to azure/i })).toBeNull();
     const bar = screen.getByRole('region', { name: 'Review decision' });
     expect(within(bar).getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
@@ -2239,6 +2239,39 @@ describe('JobDetail', () => {
     // the counterpart decision sits beside Write, before it
     expect(reject.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
+  });
+
+  it('offers the items as a CSV (an Azure DevOps tree export) once the job has items, and downloads it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-11',
+      status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Coffee Unit Specification', description: '', action: 'create', customerId: null },
+        { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'The unit shall heat water.', description: 'CFM-014: The unit shall heat water.', action: 'create', customerId: 'CFM-014' },
+      ],
+    } as any);
+    const created: Blob[] = [];
+    const createObjectURL = vi.fn((blob: Blob) => {
+      created.push(blob);
+      return 'blob:items';
+    });
+    vi.stubGlobal('URL', Object.assign(Object.create(URL), { createObjectURL, revokeObjectURL: vi.fn() }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    renderAt('job-11');
+    const tools = await screen.findByRole('group', { name: 'Job tools' });
+    const button = await within(tools).findByRole('button', { name: 'Download items (CSV)' });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(button);
+    expect(click).toHaveBeenCalledTimes(1);
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(created[0]);
+    });
+    expect(text).toContain('ID,Work Item Type,Title 1,Title 2,Customer ID,Description,Page,Section,Excluded');
+    expect(text).toContain(',Requirement,,The unit shall heat water.,CFM-014,CFM-014: The unit shall heat water.,,,');
   });
 
   it('shows no Resubmit or Delete while a job is running, only Download summary and Cancel run', async () => {
