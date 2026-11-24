@@ -54,17 +54,31 @@ function LaneRow({
   );
 }
 
+/** What a step with no live lane is on (a scoring batch, a whole-tree pass): from its narration and the open call's heartbeat. */
+export interface CurrentPass {
+  /** What it does, in words: "Scoring requirement batch 1 of 3". */
+  line: string;
+  /** Which pass of the step: "vote 2 of 2"; null for a one-pass step. */
+  pass: string | null;
+  /** A few of the items in the batch, by their own titles. */
+  titles: string[];
+  /** How long the open model call has run. */
+  elapsedLabel: string | null;
+}
+
 export function WorkingOnCard({
   lanes,
   recent,
   now,
   titleByRef,
+  current,
 }: {
   lanes: LaneState[];
   recent: FinishedItem[];
   now: number;
   titleByRef?: ReadonlyMap<string, string>;
-}): React.ReactElement {
+  current?: CurrentPass | null;
+}): React.ReactElement | null {
   const ordered = [...lanes].sort((a, b) => a.lane - b.lane);
   const shown = ordered.slice(0, MAX_LANES_SHOWN);
   const hidden = ordered.length - shown.length;
@@ -72,6 +86,8 @@ export function WorkingOnCard({
   const finishedNames = recent
     .map((item) => readableTitle(item.title, item.ref, titleByRef))
     .filter((name): name is string => name !== null);
+  // Nothing real to show: the card is absent rather than a fixed sentence that never changes (DESIGN.md §16.22, §16.12).
+  if (shown.length === 0 && !current && finishedNames.length === 0) return null;
   return (
     <section
       aria-label='What the model is working on'
@@ -90,6 +106,23 @@ export function WorkingOnCard({
             <LaneRow key={lane.lane} lane={lane} stale={now - lane.receivedAt > STALE_AFTER_MS} titleByRef={titleByRef} />
           ))}
         </ul>
+      ) : current ? (
+        <div className='flex flex-col gap-1.5' data-testid='working-on-current'>
+          <p className='text-sm font-semibold text-ink-1'>
+            {current.line}
+            {current.pass && <span className='font-normal text-ink-2'> · {current.pass}</span>}
+          </p>
+          {current.titles.length > 0 && (
+            <ul className='ml-4 list-disc text-xs text-ink-2'>
+              {current.titles.map((title) => (
+                <li key={title} dir='auto' className='truncate' title={title}>
+                  {title}
+                </li>
+              ))}
+            </ul>
+          )}
+          {current.elapsedLabel && <p className='text-xs text-ink-3'>Waiting on the model&apos;s answer for this batch, {current.elapsedLabel} so far.</p>}
+        </div>
       ) : (
         <p className='text-xs text-ink-3'>{NO_ACTIVE_WORK_COPY}</p>
       )}

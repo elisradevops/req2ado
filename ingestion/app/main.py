@@ -2509,6 +2509,8 @@ async def prestudy_route(
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
     # The Open WebUI file the orchestrator uploaded for this study (the hybrid route): attached to the model's calls beside the profile.
     x_file_id: str | None = Header(default=None, alias="X-Req2Ado-File-Id"),
+    # The job the reading is for, when a job asks (not the wizard): its live screen names the step instead of a silent Parse.
+    job_id: str | None = None,
 ) -> PrestudyResponse:
     """How a file states its structure. With `rulebook`: checks a user's edit against the document (no model). Without: asks the model (the file's own
     row, column and heading numbers in a bounded profile, its answers validated against the whole file and voted), and returns the rulebook it can stand
@@ -2524,6 +2526,10 @@ async def prestudy_route(
         if reason is not None:
             raise HTTPException(status_code=422, detail=reason)
         return _prestudy_response(doc, rulebook, "user", [])
+    if job_id is not None:
+        NarrationPublisher(_narration_redis, job_id).publish(
+            LevelingProgress(phase="learn_layout", branch_index=None, branch_count=0, blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[])
+        )
     client = await _survey_client(body.model, user_id)
     client.study_file_id = x_file_id or None
     client.study_fresh = body.fresh

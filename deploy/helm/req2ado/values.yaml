@@ -154,6 +154,9 @@ config:
   JOB_RETENTION_MAX_AGE_MS: "172800000"
   KB_PROFILE_CONCURRENCY: "3"
   LEVEL_MAX_DURATION_MS: "10800000"
+  # The live running-job view (counted progress, the "Now" card, scoring passes, the document outline). Read by both the orchestrator and
+  # ingestion. Both default to off when unset, which left production on the old static screen.
+  LIVE_PROGRESS: "true"
   LLM_BASE_URL: "https://elbichat.elbitsystems.com/api/v1"
   # LLM_CHAT_BASE_URL: "" # Optional: overrides LLM_BASE_URL for SDK chat calls only.
   #   Use to switch to Open WebUI's /api/chat path (set to https://host/api) without

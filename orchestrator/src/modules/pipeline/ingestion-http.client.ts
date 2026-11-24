@@ -590,10 +590,12 @@ export class IngestionHttpClient {
   async prestudy(
     doc: CanonicalDoc,
     // `fresh`: ask the model again instead of reusing its cached answers (the wizard's "Read again").
-    options: { userId?: string; model?: string; fileId?: string; rulebook?: Record<string, unknown>; fresh?: boolean; signal?: AbortSignal } = {},
+    // `jobId`: the job the reading is for, so its live screen names the step (absent for the wizard).
+    options: { userId?: string; model?: string; fileId?: string; rulebook?: Record<string, unknown>; fresh?: boolean; jobId?: string; signal?: AbortSignal } = {},
   ): Promise<PrestudyResult> {
     const timeout = AbortSignal.timeout(PRESTUDY_TIMEOUT_MS);
-    const response = await fetch(`${this.baseUrl}/prestudy`, {
+    const jobQuery = options.jobId ? `?${new URLSearchParams({ job_id: options.jobId }).toString()}` : '';
+    const response = await fetch(`${this.baseUrl}/prestudy${jobQuery}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

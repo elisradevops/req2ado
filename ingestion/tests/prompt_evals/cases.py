@@ -1133,3 +1133,136 @@ CASES.append(
         bad=[_j({"a": {"option": "o2", "reason": "Status is health."}})],
     )
 )
+
+
+# --- study_file_rules_document v2: front matter by heading number, never content ------------------------------------------------
+
+
+def _doc_sample(headings: list[tuple[int, str | None, str]]) -> dict:
+    rows = [
+        {
+            "i": i,
+            "level": 1 if not number or "." not in number else 2,
+            "depth": 0 if not number or "." not in number else 1,
+            "number": number,
+            "text": text,
+        }
+        for i, (_, number, text) in enumerate(headings)
+    ]
+    return {
+        "headingCount": len(rows),
+        "headings": rows,
+        "leadingPatterns": [],
+        "levelCounts": {},
+        "depthCounts": {},
+    }
+
+
+_FM_SAMPLE = _doc_sample(
+    [
+        (0, None, "Revision History"),
+        (1, None, "Acronyms"),
+        (2, "1", "Power"),
+        (3, "1.1", "Input voltage"),
+        (4, "1.2", "Output rails"),
+        (5, "2", "Built-in test"),
+        (6, "2.1", "Power-up test"),
+    ]
+)
+_SCOPE_SAMPLE = _doc_sample(
+    [
+        (0, "1", "Introduction"),
+        (1, "1.1", "Scope"),
+        (2, "1.2", "Purpose"),
+        (3, "2", "Power"),
+        (4, "2.1", "Input voltage"),
+        (5, "3", "Built-in test"),
+        (6, "3.1", "Power-up test"),
+    ]
+)
+
+
+def _front_matter_of(result: object) -> dict[int, str] | None:
+    items = result.get("front_matter_headings") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return None
+    return {
+        item["i"]: item.get("role")
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("i"), int)
+    }
+
+
+def _check_front_matter(result: object) -> Checks:
+    found = _front_matter_of(result)
+    return {
+        "shape": (found is not None, "no front_matter_headings list"),
+        "names_front_matter": (
+            found is not None and {0, 1} <= set(found),
+            "revision history or acronyms not named",
+        ),
+        "roles": (
+            found is not None
+            and found.get(0) == "revision_history"
+            and found.get(1) in ("abbreviations", "glossary"),
+            "wrong role",
+        ),
+        "spares_sections": (
+            found is not None and not any(i >= 2 for i in found),
+            "a numbered section named as front matter",
+        ),
+    }
+
+
+def _check_scope_is_content(result: object) -> Checks:
+    found = _front_matter_of(result)
+    return {
+        "shape": (found is not None, "no front_matter_headings list"),
+        "content_kept": (
+            found is not None and not found,
+            "Introduction, Scope or Purpose named as front matter",
+        ),
+    }
+
+
+def _doc_reply(front: list[dict]) -> str:
+    return _j(
+        {
+            "type_source": "none",
+            "labels": [],
+            "depth_types": [],
+            "evidence_headings": [],
+            "front_matter_headings": front,
+        }
+    )
+
+
+CASES += [
+    Case(
+        "study_file_rules_document",
+        "front_matter_by_heading",
+        lambda c: c.study_file_rules_document(_FM_SAMPLE),
+        _check_front_matter,
+        [_doc_reply([{"i": 0, "role": "revision_history"}, {"i": 1, "role": "abbreviations"}])],
+        [
+            _doc_reply([]),
+            _doc_reply(
+                [
+                    {"i": 0, "role": "revision_history"},
+                    {"i": 1, "role": "abbreviations"},
+                    {"i": 2, "role": "other"},
+                ]
+            ),
+        ],
+        frozenset({"front_matter"}),
+    ),
+    Case(
+        "study_file_rules_document",
+        "scope_is_not_front_matter",
+        lambda c: c.study_file_rules_document(_SCOPE_SAMPLE),
+        _check_scope_is_content,
+        [_doc_reply([])],
+        [_doc_reply([{"i": 1, "role": "other"}])],
+        frozenset({"front_matter"}),
+    ),
+]

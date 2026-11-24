@@ -144,19 +144,21 @@ class LiveEmitter:
             }
         )
 
-    def model_progress(self, *, prompt: str, stage: str, elapsed_s: float, tokens: int | None) -> None:
+    def model_progress(self, *, prompt: str, stage: str, elapsed_s: float, tokens: int | None, pass_: str | None = None) -> None:
         """How far one open model call has got: so a long call (a scoring batch can take minutes) never looks stuck. `tokens` is
-        about how many the model has written so far (None when the call does not stream)."""
-        self._submit(
-            {
-                "kind": "model_progress",
-                "lane": PROGRESS_LANE,
-                "prompt": prompt,
-                "stage": stage,
-                "elapsedS": round(elapsed_s, 1),
-                "tokens": tokens,
-            }
-        )
+        about how many the model has written so far (None when the call does not stream). `pass_` names which pass of its step
+        the call is ("vote 2 of 2"), so a second pass over the same items is announced instead of looking like a loop."""
+        frame = {
+            "kind": "model_progress",
+            "lane": PROGRESS_LANE,
+            "prompt": prompt,
+            "stage": stage,
+            "elapsedS": round(elapsed_s, 1),
+            "tokens": tokens,
+        }
+        if pass_:
+            frame["pass"] = pass_[:80]
+        self._submit(frame)
 
     def writing(
         self,

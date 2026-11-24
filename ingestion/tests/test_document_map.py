@@ -151,8 +151,8 @@ def test_titles_are_clipped_to_one_line() -> None:
     doc = _doc(
         blocks=[
             _heading(0, 1, long_title),
-            _heading(1, 2, "1.1  Child one"),
-            _heading(2, 2, "1.2  Child two"),
+            _heading(1, 2, "1.1  The unit shall do the first thing"),
+            _heading(2, 2, "1.2  The unit shall do the second thing"),
         ]
     )
     doc_map = _build(doc)

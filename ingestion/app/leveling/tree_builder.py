@@ -10,8 +10,14 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRe
 from app.distillation.description import assemble_description, strip_leading_title
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
-from app.leveling.customer_id import extract_customer_requirement_code
+from app.leveling.customer_id import extract_customer_requirement_code, leading_requirement_code
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
+from app.leveling.document_layout import (
+    find_front_matter,
+    learned_front_matter,
+    left_out_warning,
+    without_front_matter,
+)
 from app.leveling.hierarchy_rules import (
     ensure_ladder,
     learn_leaf_floor,
@@ -20,6 +26,7 @@ from app.leveling.hierarchy_rules import (
 )
 from app.leveling.id_hierarchy import is_standalone_statement, standalone_statement_flags
 from app.leveling.identity_v2 import assign_identity_v2
+from app.leveling.informational import fold_informational_sections
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
@@ -1005,10 +1012,42 @@ def _split_statement_bodies(
     nodes[:] = result
 
 
-def build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree:
+def _titles_without_customer_id(nodes: list[WorkItemNode]) -> None:
+    """A Requirement whose title opens with its own Customer ID ("REQ-001: The PDU shall ...") keeps the ID in its Customer ID field only:
+    repeated at the front of the title it pushed the ID chip to the end of a long line, out of sight. The description is untouched."""
+    for node in nodes:
+        if node.type != WorkItemType.REQUIREMENT or not node.customer_id:
+            continue
+        code, rest = leading_requirement_code(node.title)
+        if code == node.customer_id and rest.strip():
+            node.title = rest.strip()
+
+
+def _rehash(node: WorkItemNode) -> None:
+    """A node's hashes after its description changed (the same pair every description fold in this module keeps current)."""
+    node.fidelity_hash = _hash_description(node.description)
+    node.identity_hash = _hash_identity(node.description, node.source_ref)
+
+
+def build_baseline_tree(
+    doc: CanonicalDoc, rulebook: FileRulebook | None = None, leave_out_front_matter: bool = True
+) -> WorkItemTree:
     """See _build_baseline_tree; also sets every node's W1 identity_hash_v2/content_hash (identity_v2.assign_identity_v2). `rulebook` is what the
-    pre-study learned about the file's conventions (study/model_rules.py); None builds from the conventions the code recognises, as before."""
-    return assign_identity_v2(_build_baseline_tree(doc, rulebook), doc)
+    pre-study learned about the file's conventions (study/model_rules.py); None builds from the conventions the code recognises, as before.
+    The document's front matter is left out first and reported once (app.leveling.document_layout); `leave_out_front_matter=False` is for a
+    caller that already left it out (SURVEY's residual, adopt_baseline_structure)."""
+    front = find_front_matter(doc, learned_front_matter(rulebook)) if leave_out_front_matter else None
+    built = _build_baseline_tree(without_front_matter(doc, front) if front else doc, rulebook)
+    # A leaf section that only describes the document (Scope, Purpose, ...) is context, not a Requirement (app.leveling.informational).
+    folded = fold_informational_sections(built.nodes, _rehash)
+    if folded is not None:
+        built.warnings.append(folded)
+    _titles_without_customer_id(built.nodes)
+    tree = assign_identity_v2(built, doc)
+    left_out = left_out_warning(front) if front else None
+    if left_out is not None:
+        tree.warnings.append(left_out)
+    return tree
 
 
 def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree:

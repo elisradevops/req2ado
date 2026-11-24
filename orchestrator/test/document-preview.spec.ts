@@ -9,7 +9,7 @@ describe('buildPreviewOverview', () => {
 
   it('builds the overview, the caveat and the hint from the parsed document, with the baseline tree when it is had', async () => {
     const level = jest.fn().mockResolvedValue({ nodes: [{ local_id: 'e', type: 'Epic', parent_local_id: null }] });
-    const overview = await buildPreviewOverview(doc(blocks), level, { sectionCount: 2, depth: 2, documentMap: [] });
+    const { overview } = await buildPreviewOverview(doc(blocks), level);
     expect(level).toHaveBeenCalledWith(expect.anything(), 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal));
     expect(overview.profile.baselineTree).toEqual({ epics: 1, features: 0, requirements: 0, depth: 1, roots: 1 });
     expect(overview.lines?.join(' ')).not.toMatch(/headings alone/);
@@ -20,7 +20,7 @@ describe('buildPreviewOverview', () => {
 
   it('answers without the tree when ingestion fails, and logs that it did', async () => {
     const warn = jest.fn();
-    const overview = await buildPreviewOverview(doc(blocks), jest.fn().mockRejectedValue(new Error('down')), { sectionCount: 2, depth: 2, documentMap: [] }, { warn });
+    const { overview } = await buildPreviewOverview(doc(blocks), jest.fn().mockRejectedValue(new Error('down')), { warn });
     expect(overview.profile.baselineTree).toBeUndefined();
     expect(overview.lines?.length).toBeGreaterThan(0);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('baseline tree'));
@@ -34,9 +34,9 @@ describe('buildPreviewOverview', () => {
       seen.addEventListener('abort', () => reject(new Error('aborted')));
     }));
     try {
-      const pending = buildPreviewOverview(doc(blocks), level, { sectionCount: 2, depth: 2, documentMap: [] });
+      const pending = buildPreviewOverview(doc(blocks), level);
       await jest.advanceTimersByTimeAsync(9_000);
-      expect((await pending).profile.baselineTree).toBeUndefined();
+      expect((await pending).overview.profile.baselineTree).toBeUndefined();
     } finally {
       jest.useRealTimers();
     }
@@ -46,12 +46,41 @@ describe('buildPreviewOverview', () => {
   it('still answers within the bound when the ingestion call ignores the cancel signal and never returns', async () => {
     jest.useFakeTimers();
     try {
-      const pending = buildPreviewOverview(doc(blocks), jest.fn().mockImplementation(() => new Promise(() => undefined)), { sectionCount: 2, depth: 2, documentMap: [] });
+      const pending = buildPreviewOverview(doc(blocks), jest.fn().mockImplementation(() => new Promise(() => undefined)));
       await jest.advanceTimersByTimeAsync(9_000);
-      expect((await pending).profile.baselineTree).toBeUndefined();
+      expect((await pending).overview.profile.baselineTree).toBeUndefined();
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('the front matter the baseline build left out', () => {
+  const blocks = [
+    { id: 'b0', kind: 'heading', heading_level: 1, number_label: '1', text: 'Power Distribution Unit Specification' },
+    { id: 'b1', kind: 'paragraph', text: 'This document contains proprietary information of Acme.' },
+    { id: 'b2', kind: 'heading', heading_level: 1, number_label: '2', text: 'Revision History' },
+    { id: 'b3', kind: 'heading', heading_level: 1, number_label: null, text: '1 Introduction' },
+    { id: 'b4', kind: 'paragraph', text: 'This specification defines the requirements of the unit.' },
+  ];
+  const tree = {
+    nodes: [{ local_id: 'e', type: 'Epic', parent_local_id: null }],
+    warnings: [{ kind: 'front_matter_left_out', detail: { blockIds: ['b1', 'b2'], tableIds: ['t0'], titleBlockId: 'b0', pages: [1, 2], parts: [{ text: 'Revision History', page: 2 }] } }],
+  };
+
+  it('is listed once, and the overview is read off the content only', async () => {
+    const { overview, leftOut, content } = await buildPreviewOverview({ ...doc(blocks), tables: [{ id: 't0', cells: [] }] }, jest.fn().mockResolvedValue(tree));
+    expect(leftOut).toEqual({ parts: [{ text: 'Revision History', page: 2 }], pages: [1, 2], blockIds: ['b1', 'b2'], tableIds: ['t0'], titleBlockId: 'b0' });
+    expect(content.blocks.map((b: any) => b.id)).toEqual(['b0', 'b3', 'b4']);
+    expect(content.blocks[0].kind).toBe('title');
+    expect(content.tables).toEqual([]);
+    expect(overview.lines?.join(' ')).not.toMatch(/proprietary|Revision History/);
+  });
+
+  it('is absent when the baseline build left nothing out', async () => {
+    const { leftOut, content } = await buildPreviewOverview(doc(blocks), jest.fn().mockResolvedValue({ nodes: [], warnings: [] }));
+    expect(leftOut).toBeUndefined();
+    expect(content.blocks).toHaveLength(5);
   });
 });
 

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wizard and run mocks</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --canvas:#f1f4fa; --surface:#fff; --surface-alt:#f6f8fc; --sunken:#eaeff7; --hairline:#dde4ee; --hairline-strong:#c9d2e2;
+    --ink-1:#0b1220; --ink-2:#334155; --ink-3:#5b6a80; --action:#0b1220; --action-ink:#fff;
+    --accent:#4f46e5; --accent-soft:#eef2ff; --accent-border:#c7d2fe; --accent-ink:#3730a3;
+    --ok:#15803d; --ok-soft:#ecf7f0; --ok-border:#b7e0c3; --live:#0891b2;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--canvas); color:var(--ink-1); font:14px/1.5 var(--sans); }
+  .page { max-width:1200px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .lede { color:var(--ink-2); margin:0 0 32px; max-width:760px; }
+  h2.section { font-size:18px; margin:40px 0 4px; }
+  .why { color:var(--ink-3); margin:0 0 16px; max-width:820px; font-size:13px; }
+  .row { display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; }
+  .frame { flex:1 1 640px; min-width:0; }
+  .frame.phone { flex:0 0 390px; max-width:100%; }
+  .label { font:500 11px var(--mono); color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  .card { background:var(--surface); border:1px solid var(--hairline); border-radius:8px; }
+  .card > header { padding:14px 16px; border-bottom:1px solid var(--hairline); display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+  .card > header h3 { margin:0; font-size:16px; }
+  .card .body { padding:14px 16px; }
+  .muted { color:var(--ink-3); }
+  .small { font-size:13px; }
+  .mono { font-family:var(--mono); font-size:12px; }
+  dl.facts { display:grid; grid-template-columns:150px 1fr; gap:6px 16px; margin:0; }
+  dl.facts dt { color:var(--ink-3); font-size:13px; }
+  dl.facts dd { margin:0; }
+  .outline { list-style:none; padding:0; margin:8px 0 0; border-top:1px solid var(--hairline); }
+  .outline li { display:flex; gap:12px; padding:6px 0; border-bottom:1px solid var(--hairline); font-size:13px; }
+  .outline .n { font-family:var(--mono); width:36px; color:var(--ink-3); flex:none; }
+  .outline .c { margin-left:auto; color:var(--ink-3); font-family:var(--mono); font-size:12px; }
+  .outline li.sub .t { padding-left:16px; }
+  .left-out { background:var(--surface-alt); border:1px solid var(--hairline); border-radius:6px; padding:10px 12px; margin-top:12px; }
+  .left-out h4, .how h4 { margin:0 0 4px; font-size:13px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .chip { font:12px var(--mono); border:1px solid var(--hairline-strong); border-radius:999px; padding:1px 8px; color:var(--ink-2); background:var(--surface); }
+  .how { margin-top:12px; }
+  .how ul { margin:4px 0 0; padding-left:18px; }
+  details { margin-top:12px; border-top:1px solid var(--hairline); padding-top:10px; }
+  summary { cursor:pointer; font-weight:600; font-size:13px; }
+  .status { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-2); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--live); flex:none; }
+  .startbar { margin-top:12px; display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; background:var(--surface); border:1px solid var(--hairline); border-radius:8px; padding:10px 12px; }
+  .btn { font:600 13px var(--sans); border-radius:4px; padding:6px 14px; border:1px solid var(--hairline-strong); background:var(--surface); color:var(--ink-1); }
+  .btn.primary { background:var(--action); color:var(--action-ink); border-color:var(--action); }
+  .btn.disabled { background:var(--canvas); color:var(--ink-3); }
+  .steps { list-style:none; margin:0; padding:0; }
+  .steps li { display:flex; gap:10px; padding:7px 0; font-size:13px; align-items:baseline; }
+  .steps .ico { width:16px; flex:none; text-align:center; font-family:var(--mono); }
+  .steps .done .ico { color:var(--ok); }
+  .steps .now { font-weight:600; }
+  .steps .now .ico { color:var(--live); }
+  .steps .todo { color:var(--ink-3); }
+  .steps .res { margin-left:auto; color:var(--ink-3); font-family:var(--mono); font-size:12px; text-align:right; }
+  .bar { height:6px; background:var(--sunken); border-radius:3px; overflow:hidden; margin:8px 0 4px; }
+  .bar > span { display:block; height:100%; background:var(--accent); }
+  .now-card { border:1px solid var(--accent-border); background:var(--accent-soft); border-radius:6px; padding:10px 12px; margin-top:12px; }
+  .now-card h4 { margin:0 0 4px; font-size:13px; color:var(--accent-ink); }
+  .now-card ul { margin:4px 0 0; padding-left:18px; font-size:13px; }
+  .note { margin-top:10px; font-size:12px; color:var(--ink-3); }
+  .callouts { margin:10px 0 0; padding-left:18px; color:var(--ink-2); font-size:13px; }
+  .before { border-left:3px solid var(--hairline-strong); padding:8px 12px; background:var(--surface); border-radius:0 6px 6px 0; font-size:13px; color:var(--ink-2); }
+  @media (max-width: 700px) { dl.facts { grid-template-columns:1fr; } dl.facts dt { margin-top:6px; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Proposed wizard card and running screen</h1>
+  <p class="lede">These are mocks for the owner's review, made before anything is built. The data comes from the synthetic spec PDF
+  (<span class="mono">spec_all_together.pdf</span>), not from a customer file. They go with
+  <span class="mono">docs/plan-pdf-quality-and-ux-2026-11-24.md</span> (W1–W4, L1–L5).</p>
+
+  <h2 class="section">1. Wizard: one card, the same in BASELINE and SURVEY</h2>
+  <p class="why">It replaces "Does this look right?", "How this file is read" and "Reading and analyzing the document". It says what
+  the file is, what is left out, and how items will be built. It has one status, one timer and one "Stop waiting" (NN/g: over 10 s,
+  say when it ends and how to stop; WCAG 2.2 SC 4.1.3).</p>
+
+  <div class="row">
+    <div class="frame">
+      <div class="label">Desktop · ready</div>
+      <section class="card" aria-labelledby="w1">
+        <header><h3 id="w1">This file and how it will be read</h3><span class="mono muted">layout reused · rules 844ff9af</span></header>
+        <div class="body">
+          <p style="margin:0 0 12px">A specification of a power distribution unit for a vehicle. Its requirements are numbered
+          <span class="mono">REQ-001</span>…<span class="mono">REQ-007</span>, each one a "shall" paragraph.</p>
+          <dl class="facts">
+            <dt>Sections</dt><dd>3 sections and 4 subsections, 2 levels deep</dd>
+            <dt>Requirements</dt><dd>7, each starting with a <span class="mono">REQ-nnn</span> number</dd>
+            <dt>Numbering</dt><dd>Headings <span class="mono">1</span>, <span class="mono">1.1</span>; requirements <span class="mono">REQ-nnn</span></dd>
+          </dl>
+          <ul class="outline" aria-label="Sections">
+            <li><span class="n">1</span><span class="t">Introduction</span><span class="c">0 req</span></li>
+            <li class="sub"><span class="n">1.1</span><span class="t">Scope</span><span class="c">0 req</span></li>
+            <li><span class="n">2</span><span class="t">Power Requirements</span><span class="c">5 req</span></li>
+            <li class="sub"><span class="n">2.1</span><span class="t">Input Power</span><span class="c">3 req</span></li>
+            <li class="sub"><span class="n">2.2</span><span class="t">Output Rails</span><span class="c">2 req</span></li>
+            <li><span class="n">3</span><span class="t">Built-In Test</span><span class="c">2 req</span></li>
+            <li class="sub"><span class="n">3.1</span><span class="t">Power-Up Test</span><span class="c">2 req</span></li>
+          </ul>
+          <div class="left-out">
+            <h4>Left out: not requirements (pages 1–2)</h4>
+            <div class="chips"><span class="chip">cover · p1</span><span class="chip">confidentiality notice · p1</span><span class="chip">revision history · p2</span><span class="chip">contents · p2</span><span class="chip">abbreviations · p2</span><span class="chip">page header and footer · every page</span></div>
+          </div>
+          <div class="how">
+            <h4>How items are built</h4>
+            <ul class="small">
+              <li>Each section heading becomes a Feature under the document's Epic.</li>
+              <li>Each <span class="mono">REQ-nnn</span> paragraph becomes one Requirement under its section, taken word for word (BASELINE) or rewritten from that text only (SURVEY).</li>
+            </ul>
+          </div>
+          <details>
+            <summary>What the model learned from reading the document</summary>
+            <p class="small muted" style="margin:6px 0 0">3 defined terms (PDU, BIT, EMI) · 0 standards cited · 0 open values. Later steps use these; they never create items.</p>
+          </details>
+        </div>
+      </section>
+      <div class="startbar"><button class="btn">Back</button><span class="small muted">Nothing reaches Azure DevOps until you approve the proposed diff.</span><button class="btn primary">Start job</button></div>
+    </div>
+
+    <div class="frame phone">
+      <div class="label">390 px · still reading</div>
+      <section class="card" aria-labelledby="w1p">
+        <header><h3 id="w1p">This file and how it will be read</h3></header>
+        <div class="body">
+          <p class="status" role="status"><span class="dot"></span>Reading the file's layout: step 1 of 2 · 1:12 so far</p>
+          <p class="small muted" style="margin:6px 0 0">This happens once per file. After that it is stored and reused.</p>
+          <dl class="facts" style="margin-top:12px">
+            <dt>Sections</dt><dd>11 headings found; front matter not yet separated</dd>
+          </dl>
+        </div>
+      </section>
+      <div class="startbar">
+        <span class="small" role="status">Start waits for the file's layout · 1:12</span>
+        <span style="display:flex;gap:8px"><button class="btn">Stop waiting</button><button class="btn disabled" disabled>Start job</button></span>
+      </div>
+      <ul class="callouts">
+        <li>The reason and "Stop waiting" sit in the sticky start bar, where Start is. Today they are 1.7 screens below it.</li>
+        <li>One "Stop waiting" frees Start from the layout and the Study together.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="label" style="margin-top:20px">Today, for comparison (the same file)</div>
+  <div class="before">"Purpose, quoted from the opening text: … Acme Proprietary - Do not distribute PDU-SPEC-0042 Rev 2.0" · "Top-level sections:
+  1 Power Distribution Unit Specification … 2 Revision History … 3 Table of Contents … 1 Introduction …" · "NOTHING THE MODEL COULD VERIFY … The
+  file will be read by its recognised headings and its shape." (twice) · plus a separate AI summary and Study card.</div>
+
+  <h2 class="section">2. Running screen: each pass named, counted and finished</h2>
+  <p class="why">The Score phase becomes a checklist of its passes, each with a real count and a finished state. "Now" shows the
+  batch's subject, or is not drawn. One place says what is happening (DESIGN.md §11.3.5; NN/g: explain the work, never hang on the
+  last percentage).</p>
+
+  <div class="row">
+    <div class="frame">
+      <div class="label">Desktop · scoring, second vote</div>
+      <section class="card">
+        <header><h3>Score</h3><span class="mono muted">62% of the run (est.) · ~1 min left</span></header>
+        <div class="body">
+          <ul class="steps" aria-label="Score passes">
+            <li class="done"><span class="ico">✓</span>Scoring, vote 1 of 2<span class="res">7 scored · 2 flagged</span></li>
+            <li class="now"><span class="ico">●</span>Scoring, vote 2 of 2: a second, independent vote, so one answer cannot decide the score<span class="res">batch 1 of 1 · 0:41</span></li>
+            <li class="todo"><span class="ico">○</span>Grouping top-level items<span class="res">waiting</span></li>
+            <li class="todo"><span class="ico">○</span>Trace links between requirements<span class="res">waiting</span></li>
+            <li class="todo"><span class="ico">○</span>Acceptance criteria<span class="res">waiting</span></li>
+          </ul>
+          <div class="bar" aria-hidden="true"><span style="width:50%"></span></div>
+          <div class="small muted">Vote 2: 0 of 7 requirements returned · the model answers the whole batch at once</div>
+          <div class="now-card">
+            <h4>Now: scoring 7 requirements against your 2 knowledge-base files</h4>
+            <ul><li>REQ-001 Input voltage range</li><li>REQ-002 Input transient</li><li>…and 5 more</li></ul>
+          </div>
+          <p class="note" role="status">Waiting on the model's answer for this batch, 0:41 so far. You can close this page; the run continues.</p>
+        </div>
+      </section>
+    </div>
+    <div class="frame phone">
+      <div class="label">390 px · trace links, no live subject</div>
+      <section class="card">
+        <header><h3>Score</h3><span class="mono muted">78%</span></header>
+        <div class="body">
+          <ul class="steps">
+            <li class="done"><span class="ico">✓</span>Scoring, 2 votes<span class="res">Finished</span></li>
+            <li class="done"><span class="ico">✓</span>Grouping<span class="res">Finished</span></li>
+            <li class="now"><span class="ico">●</span>Trace links, pass 1 of 2<span class="res">0 of 7</span></li>
+            <li class="todo"><span class="ico">○</span>Acceptance criteria</li>
+          </ul>
+          <div class="bar" aria-hidden="true"><span style="width:5%"></span></div>
+          <p class="note">No "Now" card: this pass has no item to show yet. It starts at 0 of 7, never at 7 of 7.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="label" style="margin-top:20px">Today, for comparison (the same job)</div>
+  <div class="before">"Now: Waiting for the model's next answer." for the whole 5-minute run · scoring at 36% for about 110 s with "No update for
+  1m 13s" · "Resolving trace/coverage links — 17 of 17 blocks" at the start of the pass, next to "0 of 20 items in this step" · four
+  places saying "scoring batch 1 of 1".</div>
+</div>
+</body>
+</html>

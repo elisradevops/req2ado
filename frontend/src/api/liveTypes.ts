@@ -89,6 +89,8 @@ export interface LiveFrame {
   elapsedS?: number;
   /** About how many tokens the model has written so far; null when the call does not stream. */
   tokens?: number | null;
+  /** model_progress only: which pass of its step the open call is ("vote 2 of 2"); absent when the step has one pass. */
+  pass?: string | null;
   emittedAt: string;
 }
 

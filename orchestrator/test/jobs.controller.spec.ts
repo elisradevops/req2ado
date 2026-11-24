@@ -71,6 +71,7 @@ describe('JobsController.preview', () => {
       ],
       // The overview is made from the parsed document alone, at once: no study of it, no model.
       overview: expect.objectContaining({ lines: expect.arrayContaining([expect.stringMatching(/^Structure: /)]), caveat: null }),
+      leftOut: null,
     });
   });
 
@@ -142,6 +143,7 @@ describe('JobsController.preview', () => {
       openTbdCount: 0,
       documentMap: [],
       overview: expect.objectContaining({ lines: expect.any(Array) }),
+      leftOut: null,
     });
   });
 

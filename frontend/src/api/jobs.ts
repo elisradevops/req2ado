@@ -110,6 +110,18 @@ export interface PreviewResult {
   fileHash?: string;
   /** The document's size in tokens, passed back to getEstimate for the cost forecast. Absent from a server that predates it. */
   documentTokens?: number;
+  /** What the build leaves out as front matter (cover, notices, revision history, contents, ...), each part with its own heading and page; null when
+   *  nothing is. Absent from a server that predates it. */
+  leftOut?: LeftOut | null;
+}
+
+/** Front matter the build leaves out of the items: the document's own heading (or first words) for each part, with its page. */
+export interface LeftOut {
+  parts: { text: string; page: number | null }[];
+  pages: number[];
+  blockIds: string[];
+  tableIds: string[];
+  titleBlockId: string | null;
 }
 
 /** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */

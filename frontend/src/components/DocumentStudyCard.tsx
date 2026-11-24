@@ -8,7 +8,8 @@ import { plural } from '../utils/plural';
 
 // 'waiting': the file's layout is still being read (the Study reads the tables by it). 'skipped': this job reads no Study (a BASELINE job of
 // a user with no model connection), so there is nothing to show.
-export type StudyStatus = 'waiting' | 'reading' | 'ready' | 'skipped' | 'error';
+// 'cancelled': the wizard stopped waiting; the job reads the document itself when it starts.
+export type StudyStatus = 'waiting' | 'reading' | 'ready' | 'skipped' | 'error' | 'cancelled';
 
 const ORIENTATION_LABELS: [keyof DocumentStudy['orientation'], string][] = [
   ['document_type', 'Document type'],
@@ -29,7 +30,7 @@ function emptyOverview(study: DocumentStudy): string {
   return 'The document gives too little to describe it.';
 }
 
-function StudyFindings({ study }: { study: DocumentStudy }): React.ReactElement {
+export function StudyFindings({ study }: { study: DocumentStudy }): React.ReactElement {
   const orientation = ORIENTATION_LABELS.filter(([key]) => study.orientation[key]);
   const counts = [
     count(study.verification_statements.length, 'verification statement', 'verification statements'),

@@ -71,7 +71,7 @@ interface LiveRunState {
   compare: { payload: ComparePayload; seq: number; receivedAt: number } | null;
   heartbeat: HeartbeatState | null;
   /** How far the open model call has got (the server's model_progress frames): elapsed seconds and about how many tokens. */
-  modelProgress: { prompt: string; stage: string; elapsedS: number; tokens: number | null; receivedAt: number } | null;
+  modelProgress: { prompt: string; stage: string; elapsedS: number; tokens: number | null; pass: string | null; receivedAt: number } | null;
   /** What changed the run (typed notices), one per kind. Low volume, so applied at once. */
   notices: Notice[];
   /** True once any progress or live event has arrived: the server has the feature on. */
@@ -244,6 +244,7 @@ export const useLiveRunStore = create<LiveRunState>((set, get) => ({
             stage: frame.stage ?? '',
             elapsedS: frame.elapsedS ?? 0,
             tokens: frame.tokens ?? null,
+            pass: frame.pass ?? null,
             receivedAt: now,
           };
         } else {

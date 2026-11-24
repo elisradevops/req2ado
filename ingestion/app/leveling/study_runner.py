@@ -364,6 +364,10 @@ class StudyHandle:
             self._keep_results = True
         self._stop.set()
 
+    def finished(self) -> bool:
+        """Whether the study has ended (read, stopped or failed), without waiting."""
+        return self._done.is_set()
+
     def result(self, timeout: float | None = None) -> StudyOutcome:
         """Blocks until the study is done. On timeout it stops the study (keeping what was stored) and returns what was read so far. Raises
         only JobCancelled, when the job's run was cancelled; any other failure is an outcome with no study."""

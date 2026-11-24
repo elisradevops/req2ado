@@ -50,3 +50,29 @@ def extract_customer_requirement_code(text: str) -> str | None:
     match is a real, honest None, not a fallback to guessing."""
     match = _CUSTOMER_CODE_PATTERN.search(text)
     return match.group(0) if match else None
+
+
+# The same code, as the first token of a text, followed by its own separator: "REQ-001: The PDU shall ...", "SRS-12 - The unit ...".
+# The separator is required: without it, an ordinary sentence opening with a standard or an interface ("ISO-9001 compliance is
+# required", "RS485 and CAN buses ...") or a cover's document number ("PDU-SPEC-0042 Rev 2.0") read as a requirement code.
+_LEADING_CODE_PATTERN = re.compile(
+    r"^\s*(" + _CUSTOMER_CODE_PATTERN.pattern[2:] + r")\s*(?:[:.)\]]|\s[-\u2013\u2014])\s+(?=\S)"
+)
+# A requirement sentence: an obligation word in its first words (the code alone is not enough: "RS485: 9600 baud" is a spec cell).
+_OBLIGATION_PATTERN = re.compile(r"\b(shall|must|will|should)\b", re.IGNORECASE)
+
+
+def leading_requirement_code(text: str) -> tuple[str | None, str]:
+    """(code, rest) when `text` opens with a customer requirement code and its separator, else (None, text). The code starts a
+    requirement; it is not a "Label: value" label, so callers read `rest` as the requirement sentence."""
+    match = _LEADING_CODE_PATTERN.match(text)
+    if not match:
+        return None, text
+    return match.group(1), text[match.end():]
+
+
+def opens_a_requirement(text: str) -> bool:
+    """A text that opens with a requirement code and states an obligation: "REQ-001: The PDU shall ...". Stricter than
+    leading_requirement_code, for decisions that must not fire on a spec cell ("RS485: 9600 baud") or a numbered notice."""
+    code, rest = leading_requirement_code(text)
+    return code is not None and bool(_OBLIGATION_PATTERN.search(" ".join(rest.split()[:25])))

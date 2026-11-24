@@ -38,6 +38,7 @@ from collections.abc import Hashable, Sequence
 from typing import NamedTuple, TypeVar
 
 from app.canonical.model import Block, BlockKind, SourceRef, plain_text_rows
+from app.leveling.customer_id import leading_requirement_code, opens_a_requirement
 from app.leveling.numbering import parse_numbering
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemType
 
@@ -164,8 +165,9 @@ def _is_lead_in(text: str) -> bool:
 def is_standalone_statement(text: str) -> bool:
     """A complete sentence that can stand as its own item: at least _REQUIREMENT_SHAPE_MIN_WORDS words, ending in terminal
     punctuation, and neither a ':' lead-in nor a "Label: value" spec cell. Sentence structure only, no modal words, so it
-    reads any language the same way (a Hebrew future-tense obligation has no "shall")."""
-    stripped = " ".join(text.split())
+    reads any language the same way (a Hebrew future-tense obligation has no "shall"). A leading requirement code ("REQ-001: ...")
+    opens the statement and is not read as a label."""
+    stripped = " ".join(leading_requirement_code(" ".join(text.split()))[1].split())
     if len(stripped.split()) < _REQUIREMENT_SHAPE_MIN_WORDS:
         return False
     if _SPEC_CELL_LABEL_PATTERN.match(stripped):
@@ -181,9 +183,10 @@ def standalone_statement_flags(texts: Sequence[str]) -> list[bool]:
     under_lead_in = False
     for text in texts:
         stripped = " ".join(text.split())
+        coded = opens_a_requirement(stripped)
         if _is_lead_in(stripped):
             under_lead_in = True
-        elif _SPEC_CELL_LABEL_PATTERN.match(stripped):
+        elif coded or _SPEC_CELL_LABEL_PATTERN.match(stripped):
             under_lead_in = False
         flags.append(not under_lead_in and is_standalone_statement(stripped))
     return flags
@@ -755,6 +758,13 @@ def rows_from_id_headings(
         [block.source_ref for block, _s, _l in confirmed],
         id_disambiguator_needed=False,
     )
+    # This convention is the requirement typed into the heading ("1.1.2 The unit shall ..."): a leaf heading builds a node only
+    # when it states a requirement. When no leaf heading does, the requirements are the body paragraphs under ordinary section
+    # titles; claiming those headings here built only the group headings and dropped every other section (spec fixture, plain:
+    # 1 node of 7 headings), so the document is left to the structure every mode shares.
+    parent_indexes = {row.parent_index for row in rows if row.parent_index is not None}
+    if not any(row.has_shall for i, row in enumerate(rows) if i not in parent_indexes):
+        return [], [], []
     claimed_block_ids = [block.id for block, _s, _l in confirmed]
     return rows, warnings, claimed_block_ids
 

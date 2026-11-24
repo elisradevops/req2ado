@@ -40,9 +40,24 @@ describe('WorkingOnCard', () => {
     expect(screen.getByTestId('just-finished')).toHaveTextContent('Done 9');
   });
 
-  it('says what it is waiting for rather than showing nothing', () => {
+  it('is absent when there is nothing real to show, instead of a fixed sentence that never changes', () => {
     render(<WorkingOnCard lanes={[]} recent={[]} now={NOW} />);
-    expect(screen.getByText("Waiting for the model's next answer.")).toBeInTheDocument();
+    expect(screen.queryByTestId('working-on-card')).not.toBeInTheDocument();
+  });
+
+  it('shows the current batch of a step with no live lane: what it does, its pass, its items and how long', () => {
+    render(
+      <WorkingOnCard
+        lanes={[]}
+        recent={[]}
+        now={NOW}
+        current={{ line: 'Scoring requirement batch 2 of 3', pass: 'vote 2 of 2', titles: ['Input voltage', 'Transient'], elapsedLabel: '0:41' }}
+      />,
+    );
+    const current = screen.getByTestId('working-on-current');
+    expect(current).toHaveTextContent('Scoring requirement batch 2 of 3 · vote 2 of 2');
+    expect(current).toHaveTextContent('Input voltage');
+    expect(current).toHaveTextContent('0:41 so far');
   });
 
   it('hides the excerpt and says it is still waiting once a frame is older than 15 seconds', () => {
