@@ -557,3 +557,43 @@ describe('LlmController', () => {
     );
   });
 });
+
+describe('LlmController: a refused request leaves a warning in the log', () => {
+  function capture(controller: LlmController): string[] {
+    const lines: string[] = [];
+    jest.spyOn((controller as any).logger, 'warn').mockImplementation((...args: unknown[]) => {
+      lines.push(String(args[0]));
+    });
+    return lines;
+  }
+
+  it('an invalid body: route, status, the invalid fields by path, the job and stage -- never the values or the user id', async () => {
+    const { controller } = makeController({ chat: jest.fn() });
+    const lines = capture(controller);
+    const secretText = 'SECRET document wording';
+    await expect(
+      controller.chat({ messages: 'not-an-array', note: secretText }, USER_ID, undefined, 'job-9', 'score_requirements_for_document'),
+    ).rejects.toThrow(BadRequestException);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^chat request rejected \(400\): invalid body; fields messages:\w+; job job-9; stage score_requirements_for_document$/);
+    expect(lines[0]).not.toContain(secretText);
+    expect(lines[0]).not.toContain(USER_ID);
+  });
+
+  it('a refusal from the model route: its status, without the upstream text', async () => {
+    const { controller } = makeController({
+      chat: jest.fn().mockRejectedValue(new UpstreamHttpError(400, 'upstream says: host internal.example rejected the body')),
+    });
+    const lines = capture(controller);
+    await expect(controller.chat({ messages: [{ role: 'user', content: 'hi' }] }, USER_ID)).rejects.toThrow(HttpException);
+    expect(lines).toEqual(['chat request rejected (400): the model route refused the call']);
+  });
+
+  it('a user with no model connection: 401, without naming the user', async () => {
+    const getClientFor = jest.fn().mockRejectedValue(new Error('none'));
+    const controller = new LlmController({ getClientFor } as any);
+    const lines = capture(controller);
+    await expect(controller.chat({ messages: [{ role: 'user', content: 'hi' }] }, USER_ID)).rejects.toThrow(UnauthorizedException);
+    expect(lines).toEqual(['chat request rejected (401): the user has no model connection']);
+  });
+});

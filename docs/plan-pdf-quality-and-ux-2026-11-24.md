@@ -271,3 +271,21 @@ Steps 1–7 are implemented in the working tree. Nothing is committed or release
 | Wizard switched to SURVEY by itself | **Not reproduced.** Watched the selected mode every 0.5 s for 45 s after "Check and start": it stayed on BASELINE. The only path that sets the mode is the mode cards; the saved draft is written on every change. The first sighting followed a frontend container restart | Open: needs a second sighting with steps |
 | Real-PDF counts | `ingestion/scripts/pdf_structure_counts.py`: numbers only (items per type, front matter left out, Customer IDs, merged IDs, lost sections, contents lines as items). Runs offline; a test proves no document text is printed | For the owner to run |
 | Pre-study v2 on production models | Offline eval cases `front_matter_by_heading`, `scope_is_not_front_matter` (good passes, bad fails). Hand-off: `docs/handoff-prod-prestudy-v2-eval-2026-11-24.md` | For the production run |
+
+
+### 10c. Production check (2026-11-24, ingestion 0.3.33 / orchestrator 0.3.29 / frontend 0.3.26)
+
+The owner's two real PDFs, counted with `scripts/pdf_structure_counts.py` (numbers only):
+
+| | File 1 | File 2 |
+|---|---|---|
+| Items | 2 Epics, 28 Features, 110 Requirements | 3 Epics, 27 Features, 167 Requirements |
+| Front matter left out | 4 parts (page 1), 73 blocks | 4 parts (page 1), 107 blocks |
+| Contents lines as items | 0 | 0 |
+| Requirements holding several IDs (merges) | 0 | 0 |
+| Numbered sections with no item | 0 of 44 | 0 of 20 |
+| Descriptive sections kept as context | 1 | 1 |
+| Requirements with a Customer ID | 19 | 80 |
+
+The pre-study v2 eval passed 3/3 on both production models (see the eval hand-off). `LIVE_PROGRESS` was already `true` in production.
+Still to confirm by eye in the wizard: that the "Left out" list of each file holds only cover, notice, revision history and contents.

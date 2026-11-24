@@ -2,7 +2,7 @@
 documents against the structure rules locally, and sharing only the numbers.
 
     .venv/bin/python scripts/pdf_structure_counts.py spec.pdf [other.pdf ...] [--json]
-    docker compose exec ingestion python scripts/pdf_structure_counts.py /data/spec.pdf
+    docker compose exec ingestion python scripts/pdf_structure_counts.py /tmp/spec.pdf    # the image ships it at /app/scripts
 
 Runs offline, on this machine: the loader and the BASELINE structure (the same items SURVEY gets; SURVEY only rewrites wording). No model
 is called and nothing leaves the machine. The output holds numbers and the document's file name only (pass --no-name to drop the name).

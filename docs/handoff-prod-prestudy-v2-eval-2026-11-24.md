@@ -32,3 +32,12 @@ customer document is sent.
 Do not change the prompt in production. Report the case, the model and the check that failed. A model that names a content section as
 front matter cannot lose a requirement: code refuses any section that holds a requirement code, and caps front matter at half the
 document. But it could fold a descriptive section away, so the failure must be fixed in the prompt and re-evaluated before release.
+
+## Result (production, 2026-11-24, ingestion 0.3.33)
+
+| Model | `front_matter_by_heading` | `scope_is_not_front_matter` | Wall time per reading (3 votes) |
+|---|---|---|---|
+| claude-opus-5-5 | PASS 3/3 | PASS 3/3 | about 42 s |
+| OpenAI/gpt-5.4 | PASS 3/3 | PASS 3/3 | about 17 s |
+
+There were no provider blocks. A first attempt lost every call while the API pod was being replaced (see `docs/runbook-prod-probe.md`).

@@ -31,6 +31,9 @@ RUN pip install --no-cache-dir .
 COPY tests/__init__.py ./tests/__init__.py
 COPY tests/prompt_evals/__init__.py tests/prompt_evals/cases.py tests/prompt_evals/compare.py tests/prompt_evals/harness.py \
      tests/prompt_evals/labels.py tests/prompt_evals/properties.py tests/prompt_evals/run.py ./tests/prompt_evals/
+# The structure counts for a real document (numbers only, never its text, no model call), so a production probe can run
+# `python scripts/pdf_structure_counts.py --json --no-name <file.pdf>` here without supplying the script from outside.
+COPY scripts/pdf_structure_counts.py ./scripts/pdf_structure_counts.py
 # Optional, empty by default -- a developer on a network with TLS-intercepting
 # middleware (e.g. a corporate proxy) can supply an extra trusted CA
 # certificate via docker-compose.override.yml (gitignored, never committed).

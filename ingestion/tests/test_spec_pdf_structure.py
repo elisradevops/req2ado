@@ -379,3 +379,9 @@ def test_the_counts_tool_reports_numbers_only_never_the_documents_text(tmp_root:
     dumped = json.dumps(counts).casefold()
     for text in [*truth.requirements, *truth.front_matter, *truth.section_titles]:
         assert _norm(text)[:20] not in dumped
+
+
+def test_the_ingestion_image_ships_the_counts_tool() -> None:
+    """A production probe runs it inside the container; the operator cannot download it from the repository."""
+    dockerfile = (Path(__file__).parent.parent / "Dockerfile").read_text()
+    assert "COPY scripts/pdf_structure_counts.py ./scripts/pdf_structure_counts.py" in dockerfile
