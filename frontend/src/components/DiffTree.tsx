@@ -119,6 +119,8 @@ export interface DiffSuggestion {
   proposedDescription: string | null;
   decision: 'pending' | 'accepted' | 'rejected' | 'discussed';
   createdAt: string;
+  // Who suggested it: the item's assistant (absent) or With AI review while the job ran.
+  origin?: 'assistant' | 'ai_review';
 }
 
 // What an accepted suggestion replaced, kept so Undo can put it back, scores included. The server refuses an Undo once the item was edited since.
@@ -150,6 +152,12 @@ export interface DryRunDiffEntry {
   // job shapes and non-Requirement entries predate/never carry this field.
   seCoverageRef?: string | null;
   tags?: string[];
+  // What the file states (written to System.Tags and the Requirement Type field), the review marks read from a requirement's text (filters
+  // only, never written), and the type the reviewer changed it from (Undo goes back to it).
+  fileTags?: string[];
+  requirementType?: string | null;
+  derivedMarks?: string[];
+  retypedFrom?: string;
   // A section the run generated (proposed acceptance criteria, or a "Needs author input" note), held apart from `description`: it is
   // written to ADO only while `proposalAccepted` is true, and only a criteria proposal can be accepted. See ProposalCard.
   proposal?: { kind: 'criteria' | 'needs-input'; html: string } | null;
@@ -1258,6 +1266,12 @@ function DiffTreeRow({
     )}
     </>
   );
+  // TBD, Should, Will, No obligation: quiet words, read from the requirement's own text, for the filter chips above the tree. Never written.
+  const marksEl = entry.derivedMarks?.length ? (
+    <span className="flex-none text-xs text-ink-3" title="Read from the requirement's text, for filtering. Never written to Azure DevOps." data-testid="row-marks">
+      {entry.derivedMarks.join(' · ')}
+    </span>
+  ) : null;
   const excludedEl = (
     <>
     {parentIsExcluded && !entry.excluded && (
@@ -1367,11 +1381,14 @@ function DiffTreeRow({
         {canMove && <GripVertical className="h-3.5 w-3.5" />}
       </span>
       <span onClick={(e) => e.stopPropagation()} className="flex justify-center">
+        {/* Checked means "will be written" (owner decision, 2026-11-25): every item starts checked, and unchecking leaves the item and
+            everything under it out. Under a left-out parent the box is unchecked and disabled: the parent decides. */}
         <Checkbox
           tabIndex={controlTab}
-          ariaLabel={`Exclude ${entry.title}`}
-          checked={!!entry.excluded}
-          onCheckedChange={(checked) => onToggleExclude(entry.localId, checked)}
+          ariaLabel={`Write ${entry.title}${parentIsExcluded && !entry.excluded ? ' (its parent is left out)' : ''}`}
+          checked={!entry.excluded && !parentIsExcluded}
+          disabled={parentIsExcluded && !entry.excluded}
+          onCheckedChange={(checked) => onToggleExclude(entry.localId, !checked)}
         />
       </span>
 
@@ -1440,6 +1457,7 @@ function DiffTreeRow({
                 {reasonEl}
                 {customerIdEl}
                 {excludedEl}
+                {marksEl}
               </span>
             </div>
           </>
@@ -1474,6 +1492,7 @@ function DiffTreeRow({
             {excludedEl}
             {!criteriaInStatusColumn(entry) && criteriaEl}
             {lockEl}
+            {marksEl}
           </span>
         </span>
         )}

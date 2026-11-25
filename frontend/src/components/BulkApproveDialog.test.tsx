@@ -93,7 +93,7 @@ describe('BulkApproveDialog', () => {
       render(<BulkApproveDialog {...BASELINE} />);
       const dialog = screen.getByRole('dialog', { name: 'Approve 12 clean items?' });
       expect(dialog).toHaveTextContent('no blocking or review warning');
-      expect(dialog).toHaveTextContent(/copied word for word and are not scored/i);
+      expect(dialog).toHaveTextContent(/keep the file's own text and are not scored/i);
       expect(dialog).toHaveTextContent(/check a sample first/i);
       expect(dialog.textContent).not.toMatch(/low score|low grounding|model confidence|with scores?\b/i);
       expect(dialog.textContent).not.toMatch(/verified|correct|safe/i);

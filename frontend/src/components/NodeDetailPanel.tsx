@@ -1162,6 +1162,34 @@ export function NodeDetailPanel({
           <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}
+      {/* What the file itself states (the approved mockup, 2026-11-25): a Requirement's type, the file's tags (both written), and the words
+          found in the text (TBD, Should...), which are for filtering only and never written. */}
+      {(entry.type === 'Requirement' || entry.fileTags?.length || entry.derivedMarks?.length) && (
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm" data-testid="file-details">
+          {entry.type === 'Requirement' && (
+            <>
+              <dt className="text-ink-3">Requirement type</dt>
+              <dd className={entry.requirementType ? 'text-ink-1' : 'text-ink-3'}>{entry.requirementType || 'Not stated in the file'}</dd>
+            </>
+          )}
+          {entry.fileTags && entry.fileTags.length > 0 && (
+            <>
+              <dt className="text-ink-3">Tags from the file</dt>
+              <dd dir="auto" className="text-ink-1">
+                {entry.fileTags.join(', ')}
+              </dd>
+            </>
+          )}
+          {entry.derivedMarks && entry.derivedMarks.length > 0 && (
+            <>
+              <dt className="text-ink-3">Marked in the text</dt>
+              <dd className="text-ink-1">
+                {entry.derivedMarks.join(' · ')} <span className="text-xs text-ink-3">(for filtering, not written)</span>
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
       {!foldQuality && showQualityPanel && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           {entry.qualityScore != null ? (

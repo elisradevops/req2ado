@@ -55,7 +55,7 @@ export function KbAddDialog({ open, onOpenChange, file, currentMode, rememberedM
           {reingest ? 'Re-ingest' : 'Add'} "<bdi dir="auto" className="[overflow-wrap:anywhere]">{file.name}</bdi>"{reingest ? '' : ' to the knowledge base'}
         </>
       }
-      description="Choose how your survey jobs should use this document. You can switch it later without adding it again."
+      description="Choose how your With AI review jobs should use this document. You can switch it later without adding it again."
       footer={
         <>
           <span className="ml-auto" />

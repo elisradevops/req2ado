@@ -92,7 +92,7 @@ describe('DiffTree keyboard focus', () => {
 
   it('makes only the selected row\'s controls tab stops, so the tree is not seventy stops long', () => {
     renderTree('f1');
-    expect(tabStops()).toEqual(['Exclude Feature 1', 'Details for Feature 1']);
+    expect(tabStops()).toEqual(['Write Feature 1', 'Details for Feature 1']);
   });
 
   it('has no row stop at all while nothing is selected: the tree itself is the one stop', () => {
@@ -103,7 +103,7 @@ describe('DiffTree keyboard focus', () => {
   it('moves the stop with the selection', () => {
     const { rerender } = renderTree('f1');
     rerender(<DiffTree entries={treeEntries} selectedId="r1" onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    expect(tabStops()).toEqual(['Exclude Req 1', 'Details for Req 1']);
+    expect(tabStops()).toEqual(['Write Req 1', 'Details for Req 1']);
   });
 
   it('treats the work-item link in a row the same way: a stop only on the selected row', () => {

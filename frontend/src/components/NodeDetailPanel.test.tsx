@@ -1508,3 +1508,27 @@ describe('NodeDetailPanel: the edit form puts the text first', () => {
   });
 });
 });
+
+describe('NodeDetailPanel: what the file states', () => {
+  const requirement: DryRunDiffEntry = {
+    localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'The remote shall pair within 5 s.',
+    action: 'create', customerId: 'PWR-6', tags: [],
+  };
+
+  it('shows the file\'s Requirement type, its tags and the words marked in the text, saying the marks are not written', () => {
+    renderPanel(<NodeDetailPanel entry={{ ...requirement, requirementType: 'Performance', fileTags: ['Power', 'Safety'], derivedMarks: ['TBD', 'Should'] }} />);
+    const details = screen.getByTestId('file-details');
+    expect(details).toHaveTextContent('Requirement typePerformance');
+    expect(details).toHaveTextContent('Tags from the filePower, Safety');
+    expect(details).toHaveTextContent('Marked in the textTBD · Should (for filtering, not written)');
+  });
+
+  it('says a Requirement\'s type is not stated when the file gives none, and shows nothing for an Epic with nothing stated', () => {
+    const { unmount } = renderPanel(<NodeDetailPanel entry={requirement} />);
+    expect(screen.getByTestId('file-details')).toHaveTextContent('Requirement typeNot stated in the file');
+    expect(screen.queryByText('Tags from the file')).toBeNull();
+    unmount();
+    renderPanel(<NodeDetailPanel entry={{ ...requirement, type: 'Epic', customerId: null }} />);
+    expect(screen.queryByTestId('file-details')).toBeNull();
+  });
+});

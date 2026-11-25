@@ -210,7 +210,7 @@ function WorthKnowingCard({ preview, parsing, previousRuns }: { preview: Preview
       tone: 'neutral',
       text: (
         <>
-          <span className="font-semibold text-ink-1">No headings found.</span> Baseline uses clause numbering (such as 3.2.1) where the text
+          <span className="font-semibold text-ink-1">No headings found.</span> Standard uses clause numbering (such as 3.2.1) where the text
           has it; with none, it groups everything under one Epic and one Feature.
         </>
       ),
@@ -239,7 +239,7 @@ function WorthKnowingCard({ preview, parsing, previousRuns }: { preview: Preview
           <span className="font-semibold text-ink-1">
             {preview.figureCount} figure{preview.figureCount === 1 ? '' : 's'} found.
           </span>{' '}
-          Survey mode describes each one with a separate vision-model call — the main reason a Survey estimate runs longer than Baseline.
+          With AI review describes each one with a separate vision-model call — the main reason its estimate runs longer than Standard.
         </>
       ),
     });
@@ -1213,13 +1213,13 @@ export function NewJobWizard(): React.ReactElement {
                 {mode === 'survey' && selectedEstimate?.basis === 'blended' && selectedEstimate.nearSizeSampleCount === 0 && (
                   <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
                     <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
-                    No finished SURVEY run is near this document's size, so this estimate stretches the fit past what it has seen. Treat the range as rough.
+                    No finished With AI review run is near this document's size, so this estimate stretches the fit past what it has seen. Treat the range as rough.
                   </p>
                 )}
                 {mode === 'survey' && selectedEstimate?.basis === 'bootstrap' && (
                   <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
                     <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
-                    No SURVEY runs have finished here yet, so this is a starting estimate from the document's size. It becomes a measured range as SURVEY jobs finish.
+                    No With AI review runs have finished here yet, so this is a starting estimate from the document's size. It becomes a measured range as With AI review jobs finish.
                   </p>
                 )}
               </div>

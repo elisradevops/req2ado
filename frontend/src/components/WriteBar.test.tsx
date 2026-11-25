@@ -67,7 +67,7 @@ describe('WriteBar', () => {
     renderBar({ canWriteToAdo: false });
     const reason = screen.getByText('Sign in with an Azure DevOps org URL and PAT to write');
     expect(reason).toBeVisible();
-    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    const write = screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i });
     expect(write).toBeDisabled();
     expect(write.getAttribute('aria-describedby')).toContain(reason.id);
   });
@@ -77,7 +77,7 @@ describe('WriteBar', () => {
     expect(screen.queryByText(/Sign in with an Azure DevOps org URL/)).toBeNull();
     unmount();
     renderBar({ canWriteToAdo: false, blockedCount: 2 });
-    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    const write = screen.getByRole('button', { name: 'Fix 2 items' }); // blocked: the bar names the next step
     const described = (write.getAttribute('aria-describedby') ?? '').split(' ');
     expect(described).toEqual(expect.arrayContaining(['write-blocked-reason', 'write-ado-reason']));
   });
@@ -86,7 +86,7 @@ describe('WriteBar', () => {
     const onWrite = vi.fn();
     renderBar({ nothingToWrite: true, includedCount: 0, leftOutCount: 3, onWrite });
     const note = screen.getByText('Nothing left to write: every item is excluded or already exists.');
-    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    const write = screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i });
     expect(write).toBeEnabled();
     expect(write.getAttribute('aria-describedby')).toContain(note.id);
     write.click();
@@ -99,5 +99,16 @@ describe('WriteBar', () => {
     unmount();
     renderBar({ nothingToWrite: true, canWriteToAdo: false });
     expect(screen.queryByText(/Nothing left to write/)).toBeNull();
+  });
+
+  it('names the next step: "Fix N items" while blocked (not the yellow control), then the yellow "Write N items", "N of M" when some are left out', () => {
+    const { rerender } = renderBar({ blockedCount: 1, includedCount: 156 });
+    expect(screen.getByRole('button', { name: 'Fix 1 item' })).not.toHaveClass('bg-signal');
+    expect(screen.queryByRole('button', { name: /^Write /i })).toBeNull();
+    rerender(<WriteBar blockedCount={0} onWrite={vi.fn()} onReject={vi.fn()} busy={false} canWriteToAdo includedCount={156} />);
+    const write = screen.getByRole('button', { name: 'Write 156 items to Azure DevOps' });
+    expect(write).toHaveTextContent('Write 156 items');
+    rerender(<WriteBar blockedCount={0} onWrite={vi.fn()} onReject={vi.fn()} busy={false} canWriteToAdo includedCount={155} leftOutCount={1} />);
+    expect(screen.getByRole('button', { name: 'Write 155 of 156 items to Azure DevOps' })).toBeInTheDocument();
   });
 });

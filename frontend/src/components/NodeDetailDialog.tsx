@@ -17,7 +17,7 @@ import { useProposalReview } from '../hooks/useProposalReview';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { DuplicateMatchCard, type DuplicateOverrideOptions } from './DuplicateMatchCard';
 import { cn } from '../lib/cn';
-import { canBeRoot } from '../lib/canNest';
+import { canBeRoot, canNest } from '../lib/canNest';
 import type { WarningGroup } from '../utils/warningKinds';
 import { validNewParentsFor } from '../lib/moveValidation';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -127,6 +127,7 @@ export function NodeDetailDialog({
   onRetryTraceLink,
   onAddChild,
   onMove,
+  onChangeType,
   onNavigate,
   hasPrev,
   hasNext,
@@ -219,6 +220,8 @@ export function NodeDetailDialog({
   // Omitted (undefined) hides the control entirely, same convention as
   // onAddChild's own optional siblings above.
   onMove?: (localId: string, input: DiffTreeMoveInput) => void;
+  // Changes the item's type within the ladder; Undo passes back the type it had (entry.retypedFrom).
+  onChangeType?: (localId: string, type: string) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
   hasNext?: boolean;
@@ -440,7 +443,12 @@ export function NodeDetailDialog({
   // matching drag-and-drop's own scope exactly rather than a narrower one.
   const moveSlot =
     onMove && jobStatus === 'diff_ready' ? (
-      <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
+      <>
+        <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
+        {onChangeType && !written && (
+          <TypeControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} onChangeType={onChangeType} />
+        )}
+      </>
     ) : undefined;
 
   const duplicateSlot =
@@ -482,6 +490,7 @@ export function NodeDetailDialog({
     reviewMode && suggestion.proposal ? (
       <ProposalReview
         review={suggestion}
+        originLabel={suggestionId && storedSuggestion?.origin === 'ai_review' ? 'Suggested by With AI review while the job ran. Not applied unless you accept it.' : undefined}
         item={{ type: entry.type, title: entry.title, description: entry.description, qualityScore: entry.qualityScore, qualityStale: entry.qualityStale }}
         onAccept={(patch) => {
           const next = { title: patch.title ?? entry.title, description: patch.description ?? entry.description };
@@ -898,6 +907,60 @@ function MoveEntryControl({
         disabled={candidates.length === 0 && !allowRoot}
         onSelect={(parentLocalId) => onMove(entry.localId, { parentLocalId })}
       />
+    </div>
+  );
+}
+
+const LADDER = ['Epic', 'Feature', 'Requirement'] as const;
+
+/** The types this item may take where it is: one its parent allows -- at the top, only an Epic (the owner's ladder: only Epics are roots) --
+ * and one that allows each item under it. */
+export function allowedTypesFor(entry: DryRunDiffEntry, allEntries: DryRunDiffEntry[]): string[] {
+  const parent = entry.parentLocalId != null ? allEntries.find((e) => e.localId === entry.parentLocalId) : undefined;
+  const children = allEntries.filter((e) => e.parentLocalId === entry.localId);
+  return LADDER.filter((type) => (parent ? canNest(type, parent.type) : type === 'Epic') && children.every((child) => canNest(child.type, type)));
+}
+
+// The item's type, changeable within the ladder (owner decision, 2026-11-25): only for an item this job creates, offering only the types
+// allowed where it is, with Undo back to the type it had.
+export function TypeControl({
+  entry,
+  allEntries,
+  categoryLabels,
+  onChangeType,
+}: {
+  entry: DryRunDiffEntry;
+  allEntries: DryRunDiffEntry[];
+  categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
+  onChangeType: (localId: string, type: string) => void;
+}): React.ReactElement | null {
+  if (entry.action !== 'create') return null;
+  const allowed = allowedTypesFor(entry, allEntries);
+  if (allowed.length <= 1 && !entry.retypedFrom) return null;
+  const label = (type: string): string => categoryLabels?.[type as 'Epic' | 'Feature' | 'Requirement'] ?? type;
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5 text-xs" data-testid="type-control">
+      <label htmlFor={`type-${entry.localId}`} className="flex-none text-ink-3">
+        Type
+      </label>
+      <select
+        id={`type-${entry.localId}`}
+        value={entry.type}
+        onChange={(event) => onChangeType(entry.localId, event.target.value)}
+        className="h-7 rounded-sm border border-field-border bg-surface px-1.5 text-xs text-ink-1"
+      >
+        {allowed.map((type) => (
+          <option key={type} value={type}>
+            {label(type)}
+          </option>
+        ))}
+      </select>
+      <span className="text-ink-3">Only the types allowed here</span>
+      {entry.retypedFrom && (
+        <button type="button" className="ml-auto font-semibold text-accent-ink underline underline-offset-2" onClick={() => onChangeType(entry.localId, entry.retypedFrom!)}>
+          Undo
+        </button>
+      )}
     </div>
   );
 }

@@ -55,11 +55,11 @@ export function KbFileDetailPane({
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm text-ink-2">
           Reference (always include)
-          <InfoTip content="Reference files are sent in full with every survey job: right for short, stable guides such as writing standards, style guides and templates. Search files are used only when a section of your document is similar to them: right for large or customer-specific documents." />
+          <InfoTip content="Reference files are sent in full with every With AI review job: right for short, stable guides such as writing standards, style guides and templates. Search files are used only when a section of your document is similar to them: right for large or customer-specific documents." />
         </span>
         <Switch checked={alwaysInclude} onCheckedChange={onToggleAlwaysInclude} ariaLabel="Reference (always include)" disabled={isUpdatingMode} />
       </div>
-      <p className="text-xs text-ink-3">{alwaysInclude ? 'The full text is added to every survey job.' : 'Used only when a section of your document is similar to it.'}</p>
+      <p className="text-xs text-ink-3">{alwaysInclude ? 'The full text is added to every With AI review job.' : 'Used only when a section of your document is similar to it.'}</p>
     </div>
   );
 

@@ -86,8 +86,8 @@ export function BulkApproveDialog({
       description={
         baseline ? (
           <>
-            {itemsOf(count)} you have not reviewed yet. They are not flagged: no blocking or review warning. BASELINE items are copied
-            word for word and are not scored, so this is a screen, not a judgment: check a sample first.
+            {itemsOf(count)} you have not reviewed yet. They are not flagged: no blocking or review warning. Standard items keep the
+            file's own text and are not scored, so this is a screen, not a judgment: check a sample first.
           </>
         ) : (
           <>

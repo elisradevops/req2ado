@@ -206,15 +206,38 @@ describe('DiffTree', () => {
     expect(screen.queryByText('Root Epic')).not.toBeInTheDocument();
   });
 
-  it('renders an exclude toggle for every row and calls onToggleExclude with the flipped value', () => {
+  it('gives every row a "Write" box, checked while the item will be written; unchecking leaves it out (owner decision, 2026-11-25)', () => {
     const onToggleExclude = vi.fn();
     render(
       <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={onToggleExclude} />,
     );
-    const toggles = screen.getAllByRole('checkbox', { name: /exclude/i });
+    const toggles = screen.getAllByRole('checkbox', { name: /^write /i });
     expect(toggles).toHaveLength(ENTRIES.length);
+    expect(toggles[0]).toBeChecked();
     toggles[0].click();
     expect(onToggleExclude).toHaveBeenCalledWith('e1', true);
+  });
+
+  it('shows the children of a left-out item unchecked and disabled: the parent decides', () => {
+    const excludedEntries = [{ ...ENTRIES[0], excluded: true }, ...ENTRIES.slice(1)];
+    render(
+      <DiffTree entries={excludedEntries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    const [parent, child] = screen.getAllByRole('checkbox', { name: /^write /i });
+    expect(parent).not.toBeChecked();
+    expect(parent).toBeEnabled(); // it can be written again
+    expect(child).not.toBeChecked();
+    expect(child).toBeDisabled();
+    expect(child).toHaveAccessibleName(/its parent is left out/);
+  });
+
+  it('shows the review marks as quiet words, never as coloured chips', () => {
+    const marked = [...ENTRIES.slice(0, -1), { ...ENTRIES[ENTRIES.length - 1], derivedMarks: ['TBD', 'Should'] }];
+    render(<DiffTree entries={marked} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+    const marks = screen.getByTestId('row-marks');
+    expect(marks).toHaveTextContent('TBD · Should');
+    expect(marks.className).toMatch(/text-ink-3/);
+    expect(marks.className).not.toMatch(/bg-|border-/);
   });
 
   it('dims an excluded row', () => {

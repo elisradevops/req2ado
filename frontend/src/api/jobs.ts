@@ -649,6 +649,13 @@ export interface MoveDiffEntryInput {
   placement?: 'before' | 'after';
 }
 
+// Changes an item's type within the ladder (owner decision, 2026-11-25). The server allows only a type the item's parent allows and that allows
+// its children, only for an item this job creates and has not written; Undo is the same call with the entry's `retypedFrom`.
+export async function changeDiffEntryType(jobId: string, localId: string, type: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/type`, { type });
+  return response.data;
+}
+
 export async function moveDiffEntry(jobId: string, localId: string, input: MoveDiffEntryInput): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/move`, input);
   return response.data;

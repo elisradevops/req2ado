@@ -109,6 +109,7 @@ export function ProposalReview({
   onDiscuss,
   onReject,
   onBack,
+  originLabel,
 }: {
   review: ProposalReviewState;
   item: ReviewedItem;
@@ -119,6 +120,8 @@ export function ProposalReview({
   onReject: () => void;
   // Below `lg` the assistant replaces the item, so a way back to it is offered.
   onBack?: () => void;
+  // Who suggested it, when it was not the item's assistant (With AI review, while the job ran): said under the heading.
+  originLabel?: string;
 }): React.ReactElement | null {
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -207,6 +210,11 @@ export function ProposalReview({
         <h3 id={headingId} ref={headingRef} tabIndex={-1} className={cn(LABEL_MICRO, 'text-ink-2 outline-none')}>
           Suggested change
         </h3>
+        {originLabel && (
+          <span className="text-xs text-ink-3" data-testid="suggestion-origin">
+            {originLabel}
+          </span>
+        )}
       </div>
       {strip && (
         <p data-testid="grade-line" className="text-sm font-medium text-ink-1">

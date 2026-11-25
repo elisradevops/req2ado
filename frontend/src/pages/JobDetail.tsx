@@ -22,6 +22,7 @@ import {
   retryEnhancement,
   addDiffEntry,
   moveDiffEntry,
+  changeDiffEntryType,
   rescoreDiffEntry,
   setSuggestion,
   decideSuggestion,
@@ -142,6 +143,9 @@ function truncateForDisplay(text: string): string {
   if (collapsed.length <= VALIDATION_MISMATCH_PREVIEW_LENGTH) return collapsed;
   return `${collapsed.slice(0, VALIDATION_MISMATCH_PREVIEW_LENGTH)}…`;
 }
+
+// The review marks, in the order the filter chips show them (owner decision, 2026-11-25: filters only, never written).
+const REVIEW_MARKS = ['TBD', 'Should', 'Will', 'No obligation'];
 
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -376,6 +380,8 @@ export function JobDetail(): React.ReactElement {
   const [filterText, setFilterText] = useState('');
   // The review group the tree is narrowed to (Fix before writing, Check, Clean, Structure); one at a time.
   const [reviewGroup, setReviewGroup] = useState<ReviewGroup | null>(null);
+  // A review mark the tree is narrowed to (TBD, Should, Will, No obligation): read from the requirements' own text, for filtering only.
+  const [markFilter, setMarkFilter] = useState<string | null>(null);
   // Set by a warning row's tree button (see CollapsibleWarnings'
   // onFocusKind): narrows the tree, bulk include/exclude and prev/next to
   // that warning kind's affected items. Another filter dimension, ANDed
@@ -1945,6 +1951,23 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // The reviewer changes an item's type within the ladder; the server checks it and answers with the diff (no optimistic change: a refused
+  // type must not flicker into the tree).
+  async function handleChangeType(localId: string, type: string): Promise<void> {
+    if (!id || isDiffMutatingRef.current) return;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await changeDiffEntryType(id, localId, type);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch (err) {
+      showErrorToast('Failed to change the type — please try again.', err);
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   // isDiffMutatingRef/isDiffMutating are shared with handleToggleExclude,
   // handleBulkExclude, and handleMoveEntry above, not just with
   // handleAddChild below -- this serializes Save against ALL of those
@@ -2508,12 +2531,22 @@ export function JobDetail(): React.ReactElement {
   // The pressed group, unless it has emptied (its last item was decided or excluded): its chip is gone then, so the filter goes with it
   // rather than leaving a tree filtered to nothing and no control to clear it.
   const activeReviewGroup = reviewGroup && reviewGroups[reviewGroup].length > 0 ? reviewGroup : null;
-  // A group filter and a warning focus together narrow to the items in both.
+  // How many items carry each review mark, in the order the chips show them; a mark no item carries has no chip.
+  const markCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of diff) for (const mark of entry.derivedMarks ?? []) counts.set(mark, (counts.get(mark) ?? 0) + 1);
+    return REVIEW_MARKS.filter((mark) => counts.has(mark)).map((mark) => ({ mark, count: counts.get(mark)! }));
+  }, [diff]);
+  const activeMark = markFilter && markCounts.some((m) => m.mark === markFilter) ? markFilter : null;
+  // A group filter, a warning focus and a mark together narrow to the items in all of them.
   const focusVisibleIds = useMemo(() => {
-    if (!activeReviewGroup) return warningVisibleIds;
-    const groupIds = new Set(reviewGroups[activeReviewGroup].map((entry) => entry.localId));
-    return warningVisibleIds ? new Set([...warningVisibleIds].filter((localId) => groupIds.has(localId))) : groupIds;
-  }, [activeReviewGroup, reviewGroups, warningVisibleIds]);
+    const sets: Set<string>[] = [];
+    if (warningVisibleIds) sets.push(warningVisibleIds);
+    if (activeReviewGroup) sets.push(new Set(reviewGroups[activeReviewGroup].map((entry) => entry.localId)));
+    if (activeMark) sets.push(new Set(diff.filter((entry) => entry.derivedMarks?.includes(activeMark)).map((entry) => entry.localId)));
+    if (sets.length === 0) return undefined;
+    return sets.reduce((acc, next) => new Set([...acc].filter((localId) => next.has(localId))));
+  }, [activeReviewGroup, reviewGroups, warningVisibleIds, activeMark, diff]);
   const focusReviewedCount = focusWarning ? [...focusWarning.nodeIds].filter((localId) => reviewedIds.has(localId)).length : 0;
 
   // Per-item reason shown as a chip on tree rows while a warning is
@@ -3071,6 +3104,21 @@ export function JobDetail(): React.ReactElement {
                         </Tooltip>
                       );
                     })}
+                    {markCounts.map(({ mark, count }) => (
+                      <Tooltip key={mark} content="Read from the requirements' own text. For filtering only; never written to Azure DevOps.">
+                        <button
+                          type="button"
+                          onClick={() => setMarkFilter(activeMark === mark ? null : mark)}
+                          aria-pressed={activeMark === mark}
+                          className={cn(
+                            'rounded-full border px-2.5 py-1 text-xs font-medium',
+                            activeMark === mark ? 'border-accent-soft-border bg-accent-soft text-accent-ink' : 'border-hairline-strong bg-surface text-ink-2',
+                          )}
+                        >
+                          {mark} · {count}
+                        </button>
+                      </Tooltip>
+                    ))}
                     {focusWarning && (
                       <span className="flex items-center gap-1.5 rounded-full border border-accent-soft-border bg-accent-soft py-1 pl-2.5 pr-1 text-xs font-medium text-accent-ink">
                         {focusWarning.label}:{' '}
@@ -3205,6 +3253,7 @@ export function JobDetail(): React.ReactElement {
                 onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}
                 onMove={handleMoveEntry}
+                onChangeType={handleChangeType}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}
                 hasNext={hasNextEntry}

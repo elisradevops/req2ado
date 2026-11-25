@@ -1173,13 +1173,13 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
   it('says so when no finished SURVEY run is near the document\'s size', async () => {
     await reachStep2(0);
     await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
-    expect(screen.getByText(/no finished survey run is near this document's size/i)).toBeInTheDocument();
+    expect(screen.getByText(/no finished with ai review run is near this document's size/i)).toBeInTheDocument();
   });
 
   it('does not say it when a finished SURVEY run is near the document\'s size', async () => {
     await reachStep2(3);
     await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
-    expect(screen.queryByText(/no finished survey run is near this document's size/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no finished with ai review run is near this document's size/i)).not.toBeInTheDocument();
   });
 
   it('shows the uploaded document once, in the strip under the title with its counts, not again in the rail', async () => {

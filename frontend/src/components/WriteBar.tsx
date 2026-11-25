@@ -46,18 +46,32 @@ export function WriteBar({
     [blocked ? 'write-blocked-reason' : null, !canWriteToAdo ? 'write-ado-reason' : null, showNothingToWrite ? 'write-nothing-reason' : null]
       .filter(Boolean)
       .join(' ') || undefined;
-  const writeButton = (
+  // One button that names the next step (owner decision, 2026-11-25): "Fix 1 item" while something blocks the write -- plain, not the yellow
+  // control, because it does not write; it takes the reviewer to the first blocker -- then "Write 156 items", the one yellow control. Its
+  // accessible name says where the items go; the visible words stay part of it (WCAG 2.5.3).
+  const total = includedCount !== undefined ? includedCount + leftOutCount : undefined;
+  const writeLabel =
+    includedCount === undefined || total === undefined
+      ? 'Write to Azure DevOps'
+      : `Write ${includedCount === total ? total.toLocaleString() : `${includedCount.toLocaleString()} of ${total.toLocaleString()}`} ${total === 1 ? 'item' : 'items'}`;
+  const writeButton = blocked ? (
+    <span className="max-md:flex-1">
+      <Button variant="primary" onClick={onWrite} aria-describedby={describedBy} disabled={busy} className="max-md:min-h-11 max-md:w-full">
+        Fix {blockedCount.toLocaleString()} {blockedCount === 1 ? 'item' : 'items'}
+      </Button>
+    </span>
+  ) : (
     <span className="max-md:flex-1">
       <Button
         variant="cta"
         onClick={onWrite}
-        softDisabled={blocked}
+        aria-label={writeLabel === 'Write to Azure DevOps' ? undefined : `${writeLabel} to Azure DevOps`}
         aria-describedby={describedBy}
         disabled={busy || !canWriteToAdo}
         className="max-md:min-h-11 max-md:w-full"
       >
         <Upload className="h-3.5 w-3.5" />
-        Write to Azure DevOps
+        {writeLabel}
       </Button>
     </span>
   );
@@ -109,7 +123,7 @@ export function WriteBar({
           <X className="h-3.5 w-3.5" />
           Reject
         </Button>
-        {canWriteToAdo ? <Tooltip content="Write the reviewed items to Azure DevOps">{writeButton}</Tooltip> : writeButton}
+        {canWriteToAdo && !blocked ? <Tooltip content="Write the reviewed items to Azure DevOps">{writeButton}</Tooltip> : writeButton}
       </div>
     </section>
   );
