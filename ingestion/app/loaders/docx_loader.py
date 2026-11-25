@@ -766,6 +766,33 @@ def _outline_level_from_ppr(ppr) -> int | None:
     return level + 1
 
 
+def _numbering_of(ppr) -> bool | None:  # noqa: ANN001
+    """True when a paragraph-properties element turns Word numbering on (a numPr with a non-zero numId), False when it turns it off
+    (numId 0), None when it says nothing."""
+    num_pr = ppr.find(qn("w:numPr")) if ppr is not None else None
+    num_id = num_pr.find(qn("w:numId")) if num_pr is not None else None
+    if num_id is None:
+        return None
+    return num_id.get(qn("w:val")) not in (None, "0")
+
+
+def _numbered_by_word(paragraph: DocxParagraph) -> bool:
+    """Whether Word prints a number before this paragraph: numbering on the paragraph itself, or on its style or a style it is based on
+    (how a multilevel list is linked to Heading 1-9). A heading style with no numbering is not numbered, whatever its level."""
+    own = _numbering_of(paragraph._p.pPr)
+    if own is not None:
+        return own
+    style = paragraph.style
+    for _ in range(10):  # a basedOn chain is short; the bound only guards a malformed loop
+        if style is None:
+            return False
+        on = _numbering_of(style.element.find(qn("w:pPr")))
+        if on is not None:
+            return on
+        style = style.base_style
+    return False
+
+
 def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
     """Heading level via whichever signal is present, in order of
     reliability: (1) an explicit outlineLvl override on THIS paragraph's
@@ -1007,6 +1034,10 @@ def load_docx(
                         # "A.1") or a label whose depth doesn't match this
                         # heading's own level -- leave heading_counters as
                         # truncated above, don't attempt to parse it in.
+                    if number_label is not None and _numbered_by_word(paragraph):
+                        # Word prints this heading's number itself (a list linked to the heading styles): the number is part of the
+                        # heading as the reader sees it, as it is in the same document saved as PDF, so it is part of its text.
+                        content = f"{number_label} {content}"
                     blocks.append(
                         Block(
                             id=f"b{block_id}",

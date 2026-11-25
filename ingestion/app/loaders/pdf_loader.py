@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import logging
+import math
 import re
 from collections.abc import Callable
 from functools import lru_cache
@@ -1598,6 +1599,27 @@ def _without_rotated_text(page):
     return page.filter(lambda obj: obj.get("object_type") != "char" or obj.get("upright", True))
 
 
+# How far from a quarter turn a character may be set and still be text. A stamp or a watermark is set at a slant (a rubber stamp at
+# 10-20 degrees, a diagonal "DRAFT" at 45); text, including a margin notice or a column heading turned 90 degrees, is set square.
+_MAX_SKEW_DEGREES = 3.0
+
+
+def _is_tilted(obj: dict) -> bool:
+    """A character set at a slant that is not a quarter turn: part of a stamp or a watermark, never of the text. pdfplumber's `upright`
+    does not tell (a 14-degree stamp reads as upright), so the angle is taken from the character's text matrix."""
+    if obj.get("object_type") != "char" or not obj.get("matrix"):
+        return False
+    a, b = obj["matrix"][0], obj["matrix"][1]
+    angle = math.degrees(math.atan2(b, a)) % 90
+    return min(angle, 90 - angle) > _MAX_SKEW_DEGREES
+
+
+def _without_tilted_text(page):
+    """The page without its stamps and watermarks: printed over the text (a confidentiality stamp beside the cover title), their letters
+    were read in between the title's and garbled both."""
+    return page.filter(lambda obj: not _is_tilted(obj))
+
+
 def _detect_boilerplate_images(
     all_pages_images: list[list[tuple[dict, object]]],
 ) -> set[str]:
@@ -1799,6 +1821,7 @@ def load_pdf(
         # recurs ACROSS pages -- no single page's content can prove that).
         rotated_furniture = _recurring_rotated_text_pages(pdf.pages)
         pages = [_without_rotated_text(p) if i in rotated_furniture else p for i, p in enumerate(pdf.pages)]
+        pages = [_without_tilted_text(p) for p in pages]
         all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pages]
         positional_furniture = _detect_positional_furniture(
             [(lines, page.height) for page, lines in zip(pages, all_pages_lines)]
