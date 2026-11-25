@@ -16,8 +16,15 @@ Per file:
                              Requirements whose text holds more than one distinct requirement code at line starts (a merge)
   numbered_sections          headings that print a section number
   numbered_sections_without_item
-                             of those, how many have no item (a lost section)
+                             of those, how many have no item: a lost section, or one left out on purpose as front or back matter
+                             (compare with left_out_parts_with_pages)
   contents_like_items        items whose title ends in dot leaders and a page number (a table-of-contents line that became an item)
+  grammar                    whether the document's own grammar built the tree (leveling/document_grammar.py), and its requirement-code
+                             shape ("a_9", "A-9": letters and digits replaced, never the codes themselves)
+  coded_paragraphs           paragraphs that open with the document's requirement code
+  requirements_not_items     of those codes, how many are in no Requirement item (should be 0)
+  empty_sections             sections whose whole text is a marker ("None."), kept as empty Features
+  left_out_parts_with_pages  left-out parts with their first and last page, as [first, last] pairs
 """
 
 from __future__ import annotations
@@ -32,7 +39,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.dispatch import dispatch_by_extension  # noqa: E402
 from app.leveling.customer_id import leading_requirement_code  # noqa: E402
-from app.leveling.document_layout import is_contents_entry  # noqa: E402
+from app.leveling.document_grammar import (  # noqa: E402
+    document_code_shape,
+    learn_grammar,
+    requirement_coverage,
+)
+from app.leveling.document_layout import (  # noqa: E402
+    find_front_matter,
+    is_contents_entry,  # noqa: E402
+    without_front_matter,
+)
 from app.leveling.numbering import parse_numbering  # noqa: E402
 from app.leveling.tree_builder import build_baseline_tree  # noqa: E402
 
@@ -89,6 +105,29 @@ def counts_for(path: Path) -> dict:
         "numbered_sections": len(numbered),
         "numbered_sections_without_item": without_item,
         "contents_like_items": sum(1 for n in nodes if is_contents_entry(n.title)),
+        **_grammar_counts(doc, tree),
+    }
+
+
+def _grammar_counts(doc, tree) -> dict:  # noqa: ANN001
+    front = find_front_matter(doc)
+    body = without_front_matter(doc, front) if front else doc
+    grammar = learn_grammar(body)
+    shape = document_code_shape(doc)
+    paragraphs = [b.text for b in doc.blocks if b.kind.value in ("paragraph", "list_item")]
+    coverage = requirement_coverage(doc, tree.nodes)
+    left_out = next((w for w in tree.warnings if w.kind.value == "front_matter_left_out"), None)
+    return {
+        "grammar": {"applied": grammar is not None, "code_shape": shape.shape if shape else None},
+        "coded_paragraphs": sum(1 for t in paragraphs if shape and shape.opens(t)),
+        "requirements_not_items": len(coverage.detail.get("codes", [])) if coverage else 0,
+        "empty_sections": sum(
+            1 for n in tree.nodes if n.type.value == "Feature" and n.verbatim and n.description.count("\n") == 1
+            and not any(c.parent_local_id == n.local_id for c in tree.nodes)
+        ),
+        "left_out_parts_with_pages": [
+            [p.get("page"), p.get("pageEnd", p.get("page"))] for p in (left_out.detail.get("parts", []) if left_out else [])
+        ],
     }
 
 

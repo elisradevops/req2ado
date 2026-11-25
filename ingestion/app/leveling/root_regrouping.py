@@ -350,7 +350,7 @@ def _regroup_disconnected_roots(
             already_grouped.add(member.local_id)
         message = (
             f"Grouped {len(members)} previously-disconnected root section(s) under a new topical "
-            f"'{group_node.title}' {group_type.value} -- structure only, no content invented."
+            f"'{group_node.title}' {group_type.value}; its title and description were written from the sections it groups, which are unchanged."
         )
         logger.debug(message)
         warnings.append(

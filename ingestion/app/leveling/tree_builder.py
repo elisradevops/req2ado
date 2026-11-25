@@ -12,10 +12,12 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code, leading_requirement_code
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
+from app.leveling.document_grammar import build_grammar_tree, learn_grammar
 from app.leveling.document_layout import (
     find_front_matter,
     learned_front_matter,
     left_out_warning,
+    with_left_out_sections,
     without_front_matter,
 )
 from app.leveling.hierarchy_rules import (
@@ -1037,14 +1039,22 @@ def build_baseline_tree(
     The document's front matter is left out first and reported once (app.leveling.document_layout); `leave_out_front_matter=False` is for a
     caller that already left it out (SURVEY's residual, adopt_baseline_structure)."""
     front = find_front_matter(doc, learned_front_matter(rulebook)) if leave_out_front_matter else None
-    built = _build_baseline_tree(without_front_matter(doc, front) if front else doc, rulebook)
-    # A leaf section that only describes the document (Scope, Purpose, ...) is context, not a Requirement (app.leveling.informational).
-    folded = fold_informational_sections(built.nodes, _rehash)
-    if folded is not None:
-        built.warnings.append(folded)
+    body = without_front_matter(doc, front) if front else doc
+    # A document that states its own grammar (a requirement-code shape, numbered sections) is built by it (app.leveling.document_grammar).
+    grammar = learn_grammar(body, rulebook)
+    if grammar is not None:
+        result = build_grammar_tree(body, grammar, _derive_doc_title(body), _hash_description, _hash_identity)
+        built = WorkItemTree(nodes=result.nodes, warnings=result.warnings)
+        front = with_left_out_sections(front, result.left_out)
+    else:
+        built = _build_baseline_tree(body, rulebook)
+        # A leaf section that only describes the document (Scope, Purpose, ...) is context, not a Requirement (app.leveling.informational).
+        folded = fold_informational_sections(built.nodes, _rehash)
+        if folded is not None:
+            built.warnings.append(folded)
     _titles_without_customer_id(built.nodes)
     tree = assign_identity_v2(built, doc)
-    left_out = left_out_warning(front) if front else None
+    left_out = left_out_warning(front) if front is not None else None
     if left_out is not None:
         tree.warnings.append(left_out)
     return tree

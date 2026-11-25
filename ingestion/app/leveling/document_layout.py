@@ -34,11 +34,17 @@ MAX_POSITIONAL_SHARE = 0.5
 class FrontMatter:
     block_ids: set[str] = field(default_factory=set)
     table_ids: set[str] = field(default_factory=set)
-    # What the user is told was left out: (the document's own heading or first words, first page or None), in document order.
-    parts: list[tuple[str, int | None]] = field(default_factory=list)
+    # What the user is told was left out: (the document's own heading or first words, first page, last page; None when unknown), in
+    # document order.
+    parts: list[tuple[str, int | None, int | None]] = field(default_factory=list)
     # The cover's title, when the document has no title block of its own: kept as the document's title (it names the Epic),
     # not left out and not an item. A PDF never marks a title, so its cover title arrives as an ordinary heading.
     title_block_id: str | None = None
+    # The title's text when it is printed over several consecutive cover headings ("COMPONENT SPECIFICATION" / "[412.7] Greenhouse
+    # Climate Controller"): joined in order. None when the title block's own text is the title.
+    title_text: str | None = None
+    # The other headings the title was joined from: left out, but not reported as front matter (they are the title).
+    title_line_ids: set[str] = field(default_factory=set)
 
     def __bool__(self) -> bool:
         return bool(self.block_ids or self.table_ids)
@@ -132,28 +138,37 @@ def find_front_matter(doc: CanonicalDoc, learned: dict[str, str] | None = None) 
     # The cover's title, when the document has none of its own: the first heading left out by position, or a heading the pre-study
     # named as the cover.
     title_block_id: str | None = None
+    title_lines: list[Block] = []
     if not any(b.kind == BlockKind.TITLE for b in blocks):
-        first_left_out = next((b for b in blocks if b.id in left_out), None)
         learned_cover = next(
             (i for i, role in sorted((learned or {}).items()) if role == "cover"), None
         )
-        # A paginated document's cover is page 1; a text format has no pages, so only its very first block can be the title.
-        on_cover = first_left_out is not None and (
-            first_left_out.source_ref.page == 1
-            or (
-                first_left_out.source_ref.page is None
-                and blocks
-                and blocks[0].id == first_left_out.id
+        # A paginated document's cover is page 1: its first heading left out by position is the title, even after a banner or a
+        # notice printed above it, together with the headings right after it (a title printed over several lines of different
+        # sizes). A text format has no pages, so only its very first block can be the title.
+        def _title_line(b: Block) -> bool:
+            return (
+                b.id in left_out
+                and b.kind == BlockKind.HEADING
+                and not is_contents_entry(b.text)
+                and not _is_content_title(b)
             )
+
+        start = next(
+            (
+                i
+                for i, b in enumerate(blocks)
+                if (b.source_ref.page == 1 or (b.source_ref.page is None and i == 0)) and _title_line(b)
+            ),
+            None,
         )
-        if (
-            first_left_out is not None
-            and on_cover
-            and first_left_out.kind == BlockKind.HEADING
-            and not is_contents_entry(first_left_out.text)
-            and not _is_content_title(first_left_out)
-        ):
-            title_block_id = first_left_out.id
+        if start is not None:
+            title_lines = [blocks[start]]
+            for b in blocks[start + 1 :]:
+                if not _title_line(b) or b.source_ref.page != blocks[start].source_ref.page or b.source_ref.page is None:
+                    break
+                title_lines.append(b)
+            title_block_id = title_lines[0].id
         elif learned_cover is not None:
             title_block_id = learned_cover
 
@@ -164,10 +179,23 @@ def find_front_matter(doc: CanonicalDoc, learned: dict[str, str] | None = None) 
 
     if title_block_id is not None:
         left_out.discard(title_block_id)
-    result = FrontMatter(block_ids=left_out, table_ids=table_ids, title_block_id=title_block_id)
+    result = FrontMatter(
+        block_ids=left_out,
+        table_ids=table_ids,
+        title_block_id=title_block_id,
+        title_text=" \u2013 ".join(" ".join(b.text.split()) for b in title_lines) if len(title_lines) > 1 else None,
+        title_line_ids={b.id for b in title_lines[1:]},
+    )
     for block in blocks:
-        if block.id in left_out and (block.kind == BlockKind.HEADING or not result.parts):
-            result.parts.append((" ".join(block.text.split())[:80], block.source_ref.page))
+        if block.id in result.title_line_ids or block.id not in left_out:
+            continue
+        page = block.source_ref.page_end or block.source_ref.page
+        if block.kind == BlockKind.HEADING or not result.parts:
+            result.parts.append((" ".join(block.text.split())[:80], block.source_ref.page, page))
+        elif page is not None:
+            # A part runs until the next part: its last page is the last page of the blocks left out with it.
+            text, first, last = result.parts[-1]
+            result.parts[-1] = (text, first, max(page, last or page))
     return result
 
 
@@ -216,7 +244,9 @@ def without_front_matter(doc: CanonicalDoc, front: FrontMatter) -> CanonicalDoc:
     return doc.model_copy(
         update={
             "blocks": [
-                b.model_copy(update={"kind": BlockKind.TITLE, "heading_level": None})
+                b.model_copy(
+                    update={"kind": BlockKind.TITLE, "heading_level": None, "text": front.title_text or b.text}
+                )
                 if b.id == front.title_block_id
                 else b
                 for b in doc.blocks
@@ -227,23 +257,59 @@ def without_front_matter(doc: CanonicalDoc, front: FrontMatter) -> CanonicalDoc:
     )
 
 
-def left_out_warning(front: FrontMatter) -> IntegrityWarning | None:
-    if not front:
-        return None
-    pages = sorted({p for _t, p in front.parts if p is not None})
-    names = "; ".join(
-        f'"{text}"' + (f" (p{page})" if page else "") for text, page in front.parts[:12]
+def with_left_out_sections(
+    front: FrontMatter | None, sections: list[tuple[str, int | None, int | None]]
+) -> FrontMatter | None:
+    """`front` with numbered sections the document grammar left out (front matter such as a revision history inside chapter 1, back
+    matter such as a traceability listing) added to what is reported, in document order after the unnumbered front matter."""
+    if not sections:
+        return front
+    base = front if front is not None else FrontMatter()
+    return FrontMatter(
+        block_ids=base.block_ids,
+        table_ids=base.table_ids,
+        parts=sorted([*base.parts, *sections], key=_part_order),
+        title_block_id=base.title_block_id,
+        title_text=base.title_text,
+        title_line_ids=base.title_line_ids,
     )
+
+
+def left_out_warning(front: FrontMatter) -> IntegrityWarning | None:
+    if not front and not front.parts:
+        return None
+    # Every page a part covers, so a reader can tell the front matter (pages 1-5) from back matter (pages 28-31).
+    pages = sorted(
+        {p for _t, first, last in front.parts if first is not None for p in range(first, (last or first) + 1)}
+    )
+    names = "; ".join(f'"{text}"' + _pages_label(first, last) for text, first, last in front.parts[:12])
     more = " ..." if len(front.parts) > 12 else ""
     return IntegrityWarning.make(
         WarningKind.FRONT_MATTER_LEFT_OUT,
         f"Left out as front matter, not requirements: {names}{more}. "
-        f"{len(front.block_ids)} text block(s) and {len(front.table_ids)} table(s) were not made into items.",
+        f"{len(front.block_ids)} text block(s) and {len(front.table_ids)} table(s) before the first section were not made into items.",
         detail={
             "blockIds": sorted(front.block_ids),
             "tableIds": sorted(front.table_ids),
             "titleBlockId": front.title_block_id,
-            "parts": [{"text": t, "page": p} for t, p in front.parts],
+            "parts": [
+                {"text": t, "page": first, **({"pageEnd": last} if last is not None and last != first else {})}
+                for t, first, last in front.parts
+            ],
             "pages": pages,
         },
     )
+
+
+def _pages_label(first: int | None, last: int | None) -> str:
+    if first is None:
+        return ""
+    return f" (p{first}-{last})" if last is not None and last != first else f" (p{first})"
+
+
+def _part_order(part: tuple[str, int | None, int | None]) -> tuple[int, tuple[int, ...]]:
+    """Document order for parts from two sources (the pre-study's front matter and the grammar's left-out sections): by page, then by
+    section number ("1.3" before "1.4" before "1.5"); an unnumbered part (a cover, a contents page) first on its page. Sorted stably."""
+    label, _rest = parse_numbering(part[0])
+    numbers = tuple(int(n) for n in re.findall(r"\d+", label)) if label else ()
+    return (part[1] or 0, numbers)

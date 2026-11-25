@@ -193,7 +193,7 @@ function WorthKnowingCard({ preview, parsing, previousRuns }: { preview: Preview
       tone: 'neutral',
       text: (
         <>
-          <span className="font-semibold text-ink-1">Front matter left out{pagesPhrase(preview.leftOut.pages)}.</span> {leftOutNames(preview.leftOut)} will
+          <span className="font-semibold text-ink-1">Left out, not requirements{pagesPhrase(preview.leftOut.pages)}.</span> {leftOutNames(preview.leftOut)} will
           not become items.
         </>
       ),

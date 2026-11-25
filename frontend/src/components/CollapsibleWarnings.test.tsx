@@ -265,7 +265,7 @@ describe('CollapsibleWarnings', () => {
     await userEvent.click(screen.getByText('Enhanced wording unavailable'));
 
     expect(screen.getByText('What it means')).toBeInTheDocument();
-    expect(screen.getByText(/nothing is missing from the tree/i)).toBeInTheDocument();
+    expect(screen.getByText(/only their wording is affected/i)).toBeInTheDocument();
     expect(screen.getByText('What to do')).toBeInTheDocument();
     expect(screen.getByText(/resubmit the job/i)).toBeInTheDocument();
     expect(screen.getByText('Reported as')).toBeInTheDocument();

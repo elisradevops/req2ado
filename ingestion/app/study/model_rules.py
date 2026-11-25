@@ -30,6 +30,12 @@ from app.canonical.markup import html_to_cell_text
 from app.canonical.model import BlockKind, CanonicalDoc, Table
 from app.config import settings
 from app.job_cancel import JobCancelled, submit_in_context
+from app.leveling.code_shape import (
+    CodeShape,
+    leading_code_token,
+    learn_code_shape,
+    shape_candidates,
+)
 from app.leveling.customer_id import opens_a_requirement
 from app.leveling.depth import resolve_block_depth
 from app.leveling.document_layout import find_front_matter, section_of, without_front_matter
@@ -558,16 +564,82 @@ def document_sample(doc: CanonicalDoc) -> dict:
         for pattern in patterns:
             keep.update(pattern["headings"][:3])
         shown = [h for h in headings if h["i"] in keep]
+    bodies = _heading_bodies(doc)
     return {
         "headingCount": len(headings),
         "headings": [
-            {"i": h["i"], "level": h["level"], "depth": h["depth"], "number": h["number"], "text": _clip(h["text"])}
+            {
+                "i": h["i"],
+                "level": h["level"],
+                "depth": h["depth"],
+                "number": h["number"],
+                "text": _clip(h["text"]),
+                **bodies.get(h["block_id"], {}),
+            }
             for h in shown
         ],
         "leadingPatterns": patterns,
         "levelCounts": dict(sorted(Counter(h["level"] for h in headings).items())),
         "depthCounts": dict(sorted(Counter(h["depth"] for h in headings).items())),
+        "codeCandidates": _code_candidates(doc),
     }
+
+
+# The code shapes shown to the model (most frequent first), with this many example codes and one example paragraph each.
+MAX_CODE_SHAPES = 4
+CODE_EXAMPLES = 6
+
+
+def _body_paragraphs(doc: CanonicalDoc) -> list[str]:
+    return [b.text for b in doc.blocks if b.kind in (BlockKind.PARAGRAPH, BlockKind.LIST_ITEM)]
+
+
+def _code_candidates(doc: CanonicalDoc) -> list[dict]:
+    """The shapes of the code-like tokens that open paragraphs (leveling/code_shape.py): the model names which, if any, is the document's
+    requirement code by copying example codes."""
+    out = []
+    paragraphs = _body_paragraphs(doc)
+    for shape, tokens in shape_candidates(paragraphs)[:MAX_CODE_SHAPES]:
+        sample = next((t for t in paragraphs if leading_code_token(t) == tokens[0]), "")
+        out.append({"shape": shape, "count": len(tokens), "examples": sorted(set(tokens))[:CODE_EXAMPLES], "sample": _clip(sample)})
+    return out
+
+
+def _heading_bodies(doc: CanonicalDoc) -> dict[str, dict]:
+    """Per heading block id, what its own text (up to the next heading) holds: how many paragraphs open with a code-like token, how many
+    tables, whether it states an obligation, and its text when it is a one-line marker ("None.", "Not applicable.")."""
+    from app.leveling.document_grammar import MAX_MARKER_WORDS, OBLIGATION
+
+    stats: dict[str, dict] = {}
+    current: str | None = None
+    texts: dict[str, list[str]] = {}
+    for block in doc.blocks:
+        if block.kind == BlockKind.HEADING:
+            current = block.id
+            texts[current] = []
+        elif current is not None and block.kind in (BlockKind.PARAGRAPH, BlockKind.LIST_ITEM, BlockKind.NOTE, BlockKind.OPEN_TBD):
+            texts[current].append(block.text)
+    tables_by_heading: Counter = Counter()
+    heading_order = [(b.id, (b.source_ref.page or 0, b.source_ref.start_offset)) for b in doc.blocks if b.kind == BlockKind.HEADING]
+    for table in doc.tables:
+        key = (table.source_ref.page or 0, table.source_ref.start_offset)
+        owner = None
+        for heading_id, order in heading_order:
+            if order <= key:
+                owner = heading_id
+        if owner is not None:
+            tables_by_heading[owner] += 1
+    for heading_id, body in texts.items():
+        joined = " ".join(" ".join(body).split())
+        entry = {
+            "coded": sum(1 for t in body if leading_code_token(t) is not None),
+            "tables": tables_by_heading[heading_id],
+            "obligation": bool(OBLIGATION.search(joined)),
+        }
+        if len(body) == 1 and 0 < len(joined.split()) <= MAX_MARKER_WORDS:
+            entry["marker"] = joined
+        stats[heading_id] = entry
+    return stats
 
 
 _RANK = {name: rank for rank, name in enumerate(LADDER)}
@@ -650,9 +722,75 @@ def validate_document_answer(raw: dict, headings: list[dict], doc: CanonicalDoc 
     if any(_RANK[b] < _RANK[a] for (_, a), (_, b) in zip(depth_types, depth_types[1:])):
         return "the types the model gave for each depth go back up the ladder"
     front_matter = validate_front_matter(raw, headings, doc)
-    if not labels and not depth_types and not front_matter:
-        return "the model found no type and no front matter the document states"
-    return DocumentRules(labels=tuple(labels), depth_types=tuple(depth_types), origin="model", front_matter=front_matter)
+    grammar = validate_grammar(raw, headings, doc)
+    if not labels and not depth_types and not front_matter and not any(grammar.values()):
+        return "the model found no type, no front matter and no grammar the document states"
+    return DocumentRules(
+        labels=tuple(labels), depth_types=tuple(depth_types), origin="model", front_matter=front_matter, **grammar
+    )
+
+
+def validate_grammar(raw: dict, headings: list[dict], doc: CanonicalDoc | None) -> dict:
+    """The grammar the model named, each part checked against the document on its own (a part that fails is dropped, never the answer):
+      * requirement_codes: every code opens a paragraph of the document, they share one shape, and that shape opens at least
+        MIN_UNITS paragraphs;
+      * leaf_convention, empty_sections: one of the known values (anything else is no answer);
+      * context_headings: sections with no paragraph opened by the requirement code and no requirement;
+      * back_matter_headings: the same, and after the last requirement of the document."""
+    from app.leveling.document_grammar import MIN_UNITS
+    from app.study.rulebook import EMPTY_TREATMENTS, LEAF_CONVENTIONS
+
+    result: dict = {
+        "requirement_codes": (),
+        "leaf_convention": None,
+        "empty_treatment": None,
+        "context_headings": (),
+        "back_matter_headings": (),
+    }
+    if doc is None:
+        return result
+    paragraphs = _body_paragraphs(doc)
+    opening = {leading_code_token(t) for t in paragraphs} - {None}
+    codes = raw.get("requirement_codes")
+    shape: CodeShape | None = None
+    if isinstance(codes, list) and codes and all(isinstance(c, str) for c in codes):
+        named = sorted({c.strip() for c in codes if c.strip()})[:12]
+        shape = CodeShape.from_examples(named) if all(c in opening for c in named) else None
+        if shape is not None and sum(1 for t in paragraphs if shape.opens(t)) >= MIN_UNITS:
+            result["requirement_codes"] = tuple(named)
+        else:
+            shape = None
+    if raw.get("leaf_convention") in LEAF_CONVENTIONS:
+        result["leaf_convention"] = raw["leaf_convention"]
+    if raw.get("empty_sections") in EMPTY_TREATMENTS:
+        result["empty_treatment"] = raw["empty_sections"]
+
+    # With no confirmed code, the shape code learns on its own guards the sections: a section with coded requirements is never context.
+    guard = shape or learn_code_shape(paragraphs)
+
+    def opens_requirement(text: str) -> bool:
+        return opens_a_requirement(text) or (guard is not None and guard.opens(text))
+
+    by_i = {h["i"]: h for h in headings}
+    order = {b.id: k for k, b in enumerate(doc.blocks)}
+    last_requirement = max((order[b.id] for b in doc.blocks if opens_requirement(b.text)), default=-1)
+
+    def free_of_requirements(i: object) -> str | None:
+        if not isinstance(i, int) or isinstance(i, bool) or i not in by_i:
+            return None
+        block_id = by_i[i]["block_id"]
+        section, _tables = section_of(doc, block_id)
+        if not section or any(opens_requirement(b.text) for b in section):
+            return None
+        return block_id
+
+    context = raw.get("context_headings") if isinstance(raw.get("context_headings"), list) else []
+    result["context_headings"] = tuple(sorted({b for b in map(free_of_requirements, context) if b}))
+    back = raw.get("back_matter_headings") if isinstance(raw.get("back_matter_headings"), list) else []
+    result["back_matter_headings"] = tuple(
+        sorted({b for b in map(free_of_requirements, back) if b and order.get(b, -1) > last_requirement})
+    )
+    return result
 
 
 def _label_of(text: str, labels: list[LabelRule]) -> LabelRule | None:
@@ -723,7 +861,36 @@ def vote_documents(rules: list[DocumentRules]) -> DocumentRules:
         for block_id, counts in sorted(front_votes.items())
         if sum(counts.values()) * 2 > total  # a majority calls it front matter; the role is the most named one
     )
-    return DocumentRules(labels=labels, depth_types=depths, origin="model", front_matter=front)
+    return DocumentRules(labels=labels, depth_types=depths, origin="model", front_matter=front, **_vote_grammar(rules))
+
+
+def _vote_grammar(rules: list[DocumentRules]) -> dict:
+    """Each grammar part by strict majority: the requirement code by the pattern its examples induce (the examples of that majority are
+    pooled), the conventions by value, and each context or back-matter heading on its own. A part with no majority is no answer."""
+    total = len(rules)
+
+    def majority(values: list) -> object | None:
+        counts = Counter(v for v in values if v)
+        if not counts:
+            return None
+        value, count = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[0]
+        return value if count * 2 > total else None
+
+    patterns = {r.requirement_codes: getattr(CodeShape.from_examples(r.requirement_codes), "pattern", None) for r in rules if r.requirement_codes}
+    winner = majority([patterns.get(r.requirement_codes) for r in rules])
+    codes = tuple(sorted({c for r in rules if r.requirement_codes and patterns.get(r.requirement_codes) == winner for c in r.requirement_codes}))[:12] if winner else ()
+
+    def headings(attr: str) -> tuple[str, ...]:
+        votes = Counter(h for r in rules for h in getattr(r, attr))
+        return tuple(sorted(h for h, n in votes.items() if n * 2 > total))
+
+    return {
+        "requirement_codes": codes,
+        "leaf_convention": majority([r.leaf_convention for r in rules]),
+        "empty_treatment": majority([r.empty_treatment for r in rules]),
+        "context_headings": headings("context_headings"),
+        "back_matter_headings": headings("back_matter_headings"),
+    }
 
 
 def study_document_with_model(
@@ -820,7 +987,7 @@ def _rejected(source: str, reason: str) -> IntegrityWarning:
 
 
 # Bump when the sampling, validation or voting code changes meaning, so a rulebook stored under an older version is asked for again.
-_CODE_PASS_VERSION = "4"  # 4: front matter (validate_front_matter), the outline without the code-found front matter
+_CODE_PASS_VERSION = "5"  # 4: front matter (validate_front_matter), the outline without the code-found front matter; 5: the grammar
 
 
 def prestudy_version() -> str:

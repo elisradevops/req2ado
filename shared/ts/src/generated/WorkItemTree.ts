@@ -196,6 +196,7 @@ export interface IntegrityWarning {
     | 'trace_link_inference_failed'
     | 'trace_links_partial'
     | 'items_lost'
+    | 'requirements_not_items'
     | 'heading_id_offset_mismatch'
     | 'unsupported_content_note'
     | 'empty_table_content'

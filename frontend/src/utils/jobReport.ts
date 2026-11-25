@@ -57,6 +57,8 @@ export function jobReport(input: JobReportInput): string {
       ...[...byAction.entries()].map(([action, count]) => `- ${ACTION_LABEL[action] ?? action}: ${count}`),
       `- Requirements with a Customer ID: ${kept.filter((i) => i.type === 'Requirement' && i.customerId).length} of ${byType.get('Requirement') ?? 0}`,
     );
+    const shape = customerIdShape(kept);
+    if (shape) lines.push(`- Customer IDs are written like \`${shape.shape}\` (for example ${shape.examples.map((e) => `\`${e}\``).join(', ')})`);
     if (excluded.size > 0) lines.push(`- Left out by the reviewer: ${excluded.size} (not written; not counted above)`);
     lines.push('');
     lines.push(...sectionTable(kept, warnings));
@@ -67,9 +69,9 @@ export function jobReport(input: JobReportInput): string {
   const context = warnings.find((w) => w.kind === 'informational_section_folded');
   if (leftOut || context) {
     lines.push('## What the document\'s structure left out', '');
-    const parts = (leftOut?.detail.parts as { text?: string; page?: number | null }[] | undefined) ?? [];
+    const parts = (leftOut?.detail.parts as { text?: string; page?: number | null; pageEnd?: number | null }[] | undefined) ?? [];
     if (parts.length > 0) {
-      lines.push('Front matter, not made into items:', '', ...parts.map((part) => `- ${part.text ?? '(untitled)'}${part.page ? ` (page ${part.page})` : ''}`), '');
+      lines.push('Front and back matter, not made into items:', '', ...parts.map((part) => `- ${part.text ?? '(untitled)'}${pagesLabel(part.page, part.pageEnd)}`), '');
     }
     const sections = (context?.detail.sections as string[] | undefined) ?? [];
     if (sections.length > 0) {
@@ -151,6 +153,24 @@ function destination(project: string | null, areaPath: string | null): string | 
   if (!areaPath) return project;
   if (!project || areaPath === project || areaPath.startsWith(`${project}\\`)) return areaPath;
   return `${project} \\ ${areaPath}`;
+}
+
+function pagesLabel(page?: number | null, pageEnd?: number | null): string {
+  if (!page) return '';
+  return pageEnd && pageEnd !== page ? ` (pages ${page}\u2013${pageEnd})` : ` (page ${page})`;
+}
+
+/** How the Customer IDs are written (letters as a/A, digits as 9, runs collapsed, separators kept), when one way covers most of them. */
+export function customerIdShape(items: DryRunDiffEntry[]): { shape: string; examples: string[] } | null {
+  const ids = items.filter((i) => i.type === 'Requirement' && i.customerId).map((i) => i.customerId as string);
+  if (ids.length === 0) return null;
+  const byShape = new Map<string, string[]>();
+  for (const id of ids) {
+    const shape = id.replace(/[a-z]+/g, 'a').replace(/[A-Z]+/g, 'A').replace(/[0-9]+/g, '9');
+    byShape.set(shape, [...(byShape.get(shape) ?? []), id]);
+  }
+  const [shape, examples] = [...byShape.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))[0];
+  return examples.length * 2 > ids.length ? { shape, examples: examples.slice(0, 3) } : null;
 }
 
 function row(label: string, value: string | null): string[] {

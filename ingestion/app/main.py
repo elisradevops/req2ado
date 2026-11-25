@@ -62,6 +62,7 @@ from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validat
 from app.language_policy import policy_for_document
 from app.level_stream import NDJSON, ndjson_stream
 from app.leveling.description_text import description_for_model
+from app.leveling.document_grammar import document_code_shape, requirement_coverage
 from app.leveling.document_map import publish_document_map
 from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.id_tree_builder import (
@@ -2197,6 +2198,31 @@ def _append_vision_disabled_warning(
     return tree
 
 
+def _check_requirement_coverage(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
+    """Adds a warning when requirements the document numbers with its own code are in no Requirement item, and says, on the missing
+    Customer ID warning, when the document does number its requirements (leveling/document_grammar.py)."""
+    rulebook = _rulebook_of(doc)
+    warning = requirement_coverage(doc, tree.nodes, rulebook)
+    if warning is not None:
+        tree.warnings.append(warning)
+    shape = document_code_shape(doc, rulebook)
+    if shape is not None:
+        tree.warnings = [
+            w.model_copy(
+                update={
+                    "raw": f"{len(w.node_ids)} Requirement(s) have no Customer ID, although the document numbers its requirements "
+                    f"(codes shaped like {shape.shape}, e.g. {', '.join(shape.examples[:3])}); none was invented -- check each one "
+                    "and add its code if the document gives it one.",
+                    "detail": {**(w.detail or {}), "documentCodeShape": shape.shape},
+                }
+            )
+            if w.kind == WarningKind.MISSING_SOURCE_REFERENCE
+            else w
+            for w in tree.warnings
+        ]
+    return tree
+
+
 def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
     """Customer ID (WorkItemNode.customer_id), classification
     (WorkItemNode.tags), and the SE coverage reference
@@ -2434,7 +2460,7 @@ def _level_failure(request: Request, exc: Exception) -> tuple[int, str]:
 
 
 def _level_result(doc: CanonicalDoc, tree: WorkItemTree, rubric_report: dict) -> dict:
-    final = _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, "survey"))
+    final = _check_requirement_coverage(_enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, "survey")), doc)
     return {
         "tree": final.model_dump(mode="json", by_alias=True),
         "rubric": {
@@ -2748,13 +2774,17 @@ async def level(
         if rubric_report.get("degraded"):
             response.headers["X-Req2Ado-Rubric-Degraded"] = "1"
         tree.warnings.extend(stale_rulebook)
-        return _enforce_requirement_only_fields(
-            _check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc, include_model=False)
+        return _check_requirement_coverage(
+            _enforce_requirement_only_fields(
+                _check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc, include_model=False)
+            ),
+            doc,
         )
     tree = build_baseline_tree(doc, rulebook)
     tree.warnings.extend(stale_rulebook)
-    return _enforce_requirement_only_fields(
-        _check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc)
+    return _check_requirement_coverage(
+        _enforce_requirement_only_fields(_check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc)),
+        doc,
     )
 
 

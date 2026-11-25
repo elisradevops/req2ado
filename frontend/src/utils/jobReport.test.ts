@@ -30,7 +30,7 @@ const base: JobReportInput = {
       severity: 'auto_fixed',
       nodeIds: [],
       raw: 'Left out as front matter ...',
-      detail: { parts: [{ text: 'Revision History', page: 2 }, { text: 'Table of Contents', page: 2 }] },
+      detail: { parts: [{ text: 'Revision History', page: 2 }, { text: 'Table of Contents', page: 2 }, { text: '3 Requirement identities', page: 24, pageEnd: 26 }] },
     },
     { kind: 'informational_section_folded', severity: 'auto_fixed', nodeIds: ['f1'], raw: 'Kept as context ...', detail: { sections: ['1.1 Scope'] } },
     { kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['r2'], raw: 'engineer text', detail: {} },
@@ -65,6 +65,12 @@ describe('jobReport', () => {
   it('says what the document structure left out, by the document\'s own headings and pages', () => {
     expect(report).toContain('- Revision History (page 2)');
     expect(report).toContain('- 1.1 Scope');
+    expect(report).toContain('- 3 Requirement identities (pages 24\u201326)'); // a part over several pages names all of them
+  });
+
+  it('says how the Customer IDs are written, from the items themselves', () => {
+    expect(report).toContain('- Customer IDs are written like `A-9` (for example `CFM-014`)');
+    expect(jobReport({ ...base, items: base.items.map((i) => ({ ...i, customerId: null })) })).not.toContain('written like');
   });
 
   it('explains each notice in plain language, grouped by what to do about it', () => {

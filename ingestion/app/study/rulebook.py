@@ -101,6 +101,23 @@ class DocumentRules:
     # The front matter the pre-study found and code checked (study/model_rules.validate_document_answer), used by the structure step
     # (leveling/document_layout.py) to leave those sections out.
     front_matter: tuple[FrontMatterPart, ...] = ()
+    # The document's grammar as the pre-study confirmed it and code checked (leveling/document_grammar.py): example requirement codes
+    # (code induces their shape), how a section with one requirement is built, what a "None." section becomes, and the headings of
+    # sections that describe the document (context) or follow its requirements (back matter).
+    requirement_codes: tuple[str, ...] = ()
+    leaf_convention: str | None = None  # "feature_and_requirement" | "heading_is_requirement"
+    empty_treatment: str | None = None  # "empty_feature" | "leave_out"
+    context_headings: tuple[str, ...] = ()  # heading block ids
+    back_matter_headings: tuple[str, ...] = ()  # heading block ids
+
+    def has_grammar(self) -> bool:
+        return bool(
+            self.requirement_codes
+            or self.leaf_convention
+            or self.empty_treatment
+            or self.context_headings
+            or self.back_matter_headings
+        )
 
     def canonical(self) -> dict:
         canonical: dict = {
@@ -109,6 +126,14 @@ class DocumentRules:
         }
         if self.front_matter:  # only when present, so a rulebook stored before front matter existed keeps its hash
             canonical["front_matter"] = sorted((p.block_id, p.role) for p in self.front_matter)
+        if self.has_grammar():  # the same: a rulebook stored before the grammar existed keeps its hash
+            canonical["grammar"] = {
+                "requirement_codes": sorted(self.requirement_codes),
+                "leaf_convention": self.leaf_convention,
+                "empty_treatment": self.empty_treatment,
+                "context_headings": sorted(self.context_headings),
+                "back_matter_headings": sorted(self.back_matter_headings),
+            }
         return canonical
 
 
@@ -132,7 +157,8 @@ class FileRulebook:
 
     def is_empty(self) -> bool:
         return not self.tables and (
-            self.document is None or not (self.document.labels or self.document.depth_types or self.document.front_matter)
+            self.document is None
+            or not (self.document.labels or self.document.depth_types or self.document.front_matter or self.document.has_grammar())
         )
 
 
@@ -231,6 +257,19 @@ def rulebook_to_json(rulebook: FileRulebook) -> dict:
             "depth_types": [[depth, name] for depth, name in document.depth_types],
             "front_matter": [{"block_id": p.block_id, "role": p.role} for p in document.front_matter],
             "origin": document.origin,
+            **(
+                {
+                    "grammar": {
+                        "requirement_codes": list(document.requirement_codes),
+                        "leaf_convention": document.leaf_convention,
+                        "empty_treatment": document.empty_treatment,
+                        "context_headings": list(document.context_headings),
+                        "back_matter_headings": list(document.back_matter_headings),
+                    }
+                }
+                if document.has_grammar()
+                else {}
+            ),
         },
     }
 
@@ -279,5 +318,37 @@ def rulebook_from_json(raw: object, origin: str | None = None) -> FileRulebook:
             ):
                 raise ValueError("a front-matter part must be a block id and one of " + ", ".join(FRONT_MATTER_ROLES))
             front.append(FrontMatterPart(item["block_id"], item["role"]))
-        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"), front_matter=tuple(front))  # type: ignore[arg-type]
+        grammar = _grammar_from_json(document_raw.get("grammar"))
+        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"), front_matter=tuple(front), **grammar)  # type: ignore[arg-type]
     return FileRulebook(tables=tables, document=document)
+
+
+LEAF_CONVENTIONS = ("feature_and_requirement", "heading_is_requirement")
+EMPTY_TREATMENTS = ("empty_feature", "leave_out")
+
+
+def _grammar_from_json(raw: object) -> dict:
+    """The grammar fields of DocumentRules from their JSON form ({} when absent), or ValueError naming what is wrong."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("the grammar must be an object")
+
+    def strings(key: str, limit: int, length: int) -> tuple[str, ...]:
+        value = raw.get(key, [])
+        if not isinstance(value, list) or len(value) > limit or not all(isinstance(v, str) and 0 < len(v) <= length for v in value):
+            raise ValueError(f"{key} must be a short list of short strings")
+        return tuple(value)
+
+    leaf, empty = raw.get("leaf_convention"), raw.get("empty_treatment")
+    if leaf is not None and leaf not in LEAF_CONVENTIONS:
+        raise ValueError("leaf_convention must be one of " + ", ".join(LEAF_CONVENTIONS))
+    if empty is not None and empty not in EMPTY_TREATMENTS:
+        raise ValueError("empty_treatment must be one of " + ", ".join(EMPTY_TREATMENTS))
+    return {
+        "requirement_codes": strings("requirement_codes", 12, 40),
+        "leaf_convention": leaf,
+        "empty_treatment": empty,
+        "context_headings": strings("context_headings", 60, 64),
+        "back_matter_headings": strings("back_matter_headings", 20, 64),
+    }

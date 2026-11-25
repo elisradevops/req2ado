@@ -1,11 +1,21 @@
 import type { LeftOut } from '../api/jobs';
 
-/** " (pages 1–2)", " (page 1)", or "" when no page is known. */
+/** " (pages 1–2)", " (page 1)", " (pages 1–5, 28–31)" (front matter and back matter are two spans, never one), or "" when no page is known. */
 export function pagesPhrase(pages: number[]): string {
-  if (pages.length === 0) return '';
-  const low = Math.min(...pages);
-  const high = Math.max(...pages);
-  return low === high ? ` (page ${low})` : ` (pages ${low}–${high})`;
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  if (sorted.length === 0) return '';
+  const runs: string[] = [];
+  let start = sorted[0];
+  let previous = sorted[0];
+  for (const page of [...sorted.slice(1), Number.NaN]) {
+    if (page === previous + 1) {
+      previous = page;
+      continue;
+    }
+    runs.push(start === previous ? `${start}` : `${start}–${previous}`);
+    start = previous = page;
+  }
+  return sorted.length === 1 ? ` (page ${sorted[0]})` : ` (pages ${runs.join(', ')})`;
 }
 
 /** The parts by the document's own words, quoted: “Revision History”, “Table of Contents” and 2 more. */
