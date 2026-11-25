@@ -146,8 +146,9 @@ def test_a_learned_convention_changes_the_tree(twin) -> None:
     grammar = learn_grammar(twin, rulebook)
     assert grammar is not None and grammar.source == "model"
     nodes = build_baseline_tree(twin, rulebook).nodes
-    product_family = next(n for n in nodes if n.title.startswith("2.1.1"))
+    product_family = next(n for n in nodes if (n.source_title or "").startswith("2.1.1"))
     assert product_family.type.value == "Requirement" and product_family.customer_id == "gen_2"
+    assert product_family.title == "Product family"  # the heading as a clean title: no section number
 
 
 def test_a_file_whose_headings_state_their_types_keeps_them(twin) -> None:

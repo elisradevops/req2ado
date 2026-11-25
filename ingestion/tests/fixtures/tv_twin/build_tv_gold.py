@@ -6,9 +6,9 @@ Ladder (as the job builds the TV-remote mock): an area made only of sub-areas is
 (a Feature may hold sub-areas, which are Features too); each coded paragraph is a Requirement; a coded sub-item (men_3.a) is a
 sub-Requirement of its parent requirement. Only Epics are roots.
 
-Descriptions (owner decisions, 2026-11-25): a Requirement's is its text verbatim without its code, lists and Notes kept, then a blank line
-and the trace. An Epic's or Feature's is only the file's own text for it (the context chapter for the top Epic, a Note that ends a
-section); with none it is empty, never the title repeated, never counts, never where it came from. `derived_marks` (TBD, Should, Will, No
+Descriptions (owner decisions, 2026-11-25): a Requirement's is its text verbatim without its code, lists and Notes kept (a full-width
+Note printed after it included), then a blank line and the trace. An Epic's or Feature's is only the file's own text for it (the
+context sections for the top Epic); with none it is empty, never the title repeated, never counts, never where it came from. `derived_marks` (TBD, Should, Will, No
 obligation) are found in the text for review filters only and are never written; `file_tags` and `requirement_type` are what the file
 states (this file states neither). Proposals (rename / drop_wrapper) are not applied: the target is the file's original until the user
 accepts one; `spelling` fixes are applied."""
@@ -167,10 +167,9 @@ TITLES = {
     "bit_2": "Self-test result shown as pass or fail with a fault code",
     "bit_3": "Self-test results stored with the test date",
 }
-EPIC_DESC = (
-    "This document specifies the Vireo 55 television set and its VR-7 remote control, item 220.3 of the LARK programme.\n"
-    "The requirements in this document are used for the design and the acceptance of the television set and its remote control."
-)  # the context chapter's own sentences about the product; its sentences about the document's chapters are not about the product
+EPIC_DESC = "\n".join(  # the sections the study confirms as context (1.1, 1.2), word for word
+    p for sec in tv_twin.SECTIONS if sec.number in ("1.1", "1.2") for p in sec.prose
+)
 LEFT_OUT = [
     ("Cover, notices, contents", "left_out", "Front matter: pages 1-2."),
     (
@@ -270,7 +269,7 @@ for s in sections:
             statement += "\n" + "\n".join(("- " + i) if r.marker else i for i in r.items)
         if r.note:
             statement += "\n" + r.note
-        if r.full_note and not (s.number == "2.2.6" and r.code == "pwr_6"):
+        if r.full_note:
             statement += "\n" + r.full_note
         trace = ("Satisfies:\n" + "\n".join(r.parents)) if r.parents else ""
         n += 1
@@ -292,10 +291,6 @@ for s in sections:
                 "parent": parent,
             }
         )
-        if r.full_note and s.number == "2.2.6" and r.code == "pwr_6":
-            nodes[[x["id"] for x in nodes].index(sid)]["description"] = (
-                r.full_note
-            )  # a Note that ends the section is the section's
 
 # --- derived marks and what the file states -------------------------------------------------------------------------------------
 for x in nodes:

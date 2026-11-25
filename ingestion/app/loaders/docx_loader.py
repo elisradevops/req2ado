@@ -1052,7 +1052,8 @@ def load_docx(
                     )
                 else:
                     own_ppr = paragraph._p.pPr
-                    is_list_item = own_ppr is not None and own_ppr.find(qn("w:numPr")) is not None
+                    # Bulleted or numbered by Word: on the paragraph itself, or through its style ("List Bullet").
+                    is_list_item = (own_ppr is not None and own_ppr.find(qn("w:numPr")) is not None) or _numbered_by_word(paragraph)
                     blocks.append(
                         Block(
                             id=f"b{block_id}",

@@ -77,6 +77,7 @@ from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
+from app.leveling.requirement_titles import write_requirement_titles
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.study import (
@@ -2418,7 +2419,7 @@ async def _survey_level(
     # num_ctx is simpler than mutating this one after the fact.
     client = await _survey_client(model, user_id)
     catalog = json.loads(link_type_catalog) if link_type_catalog else None
-    return await run_in_threadpool(
+    tree = await run_in_threadpool(
         _build_survey_tree_with_scoring,
         doc,
         client,
@@ -2429,6 +2430,18 @@ async def _survey_level(
         primer_context,
         rubric_report,
     )
+    tree = await run_in_threadpool(_with_requirement_titles, tree, _rulebook_of(doc), client, user_id)
+    return tree
+
+
+def _with_requirement_titles(tree: WorkItemTree, rulebook: FileRulebook | None, client, user_id: str | None) -> WorkItemTree:  # noqa: ANN001
+    """Short titles for the requirements the document's grammar built (app.leveling.requirement_titles), unless the study found the file
+    gives each requirement its own title (title policy "extract"). Fail-open: the extracted titles stay, with a warning."""
+    document = rulebook.document if rulebook is not None else None
+    if getattr(document, "title_policy", None) == "extract":
+        return tree
+    write_requirement_titles(tree.nodes, client, tree.warnings, user_id, settings.survey_chunk_concurrency)
+    return tree
 
 
 # How often a streamed /level sends a heartbeat line while its run works.
@@ -2782,6 +2795,22 @@ async def level(
         )
     tree = build_baseline_tree(doc, rulebook)
     tree.warnings.extend(stale_rulebook)
+    # Both modes read the file with AI (owner decision, 2026-11-25): a job's requirements get short titles. A call without a user (the
+    # wizard's left-out preview) has no model of its own and keeps the extracted titles.
+    if user_id and any(n.verbatim and n.type == WorkItemType.REQUIREMENT for n in tree.nodes):
+        try:
+            client = await _survey_client(model, user_id)
+        except Exception as exc:  # noqa: BLE001 -- fail-open: titles are an enhancement, never a dependency of the tree
+            logger.warning("Requirement titles skipped: no model client (%s)", type(exc).__name__)
+            tree.warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    "Short titles could not be written: no AI model was available. The requirements keep the title taken from their text.",
+                    detail={"pass": "requirement_titles"},
+                )
+            )
+        else:
+            tree = await run_in_threadpool(_with_requirement_titles, tree, rulebook, client, user_id)
     return _check_requirement_coverage(
         _enforce_requirement_only_fields(_check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc)),
         doc,

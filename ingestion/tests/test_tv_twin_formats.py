@@ -4,8 +4,8 @@ Three groups:
 - the gold tree itself keeps the owner's decisions (clean titles, descriptions without codes and with the trace set apart, Epic/Feature
   descriptions only from the file's own text, derived marks never mixed with the file's tags, the Epic -> Feature -> Requirement ladder);
 - every rendering (PDF, DOCX, DOC) carries the whole document to the reader: every code and every requirement text;
-- every format, in both modes, builds the gold tree. Strict xfail until the generalised builder lands (wave 1, step 3): a pass then fails
-  the run, so the marker is removed the moment the target is met.
+- every format, in both modes, builds the gold tree: its structure by code alone, then its requirements' short titles through the title
+  pass (app.leveling.requirement_titles), with a model that answers the hand study's titles and the pass's own checks applied.
 
 The .doc is the .docx converted by LibreOffice and is committed; reading it needs `soffice`, so its cases skip where it is missing."""
 
@@ -22,7 +22,10 @@ import pytest
 
 from app.dispatch import dispatch_by_extension
 from app.leveling.llm_leveling import build_survey_tree
+from app.leveling.requirement_titles import write_requirement_titles
 from app.leveling.tree_builder import build_baseline_tree
+from app.study.model_rules import cover_lines, document_headings, validate_document_answer
+from app.study.rulebook import DocumentRules, FileRulebook
 
 TV_TWIN = Path(__file__).parent / "fixtures" / "tv_twin"
 sys.path.insert(0, str(TV_TWIN))
@@ -75,17 +78,65 @@ def _doc(fmt: str, tmp_root: str):
     return dispatch_by_extension(f"tv_twin_spec.{fmt}", str(_source(fmt, tmp_root)))
 
 
+def _study(doc) -> FileRulebook:
+    """What the file study answers for the TV twin (the hand study), keyed by heading number and cover line, checked by the same code
+    that checks a model's answer. Its proposals are undecided, so the target keeps the file's original names."""
+    headings = document_headings(doc)
+    by_number = {h["number"]: h["i"] for h in headings if h["number"]}
+    cover = cover_lines(doc)
+    answer = {
+        "type_source": "none",
+        "labels": [],
+        "depth_types": [],
+        "evidence_headings": [],
+        "front_matter_headings": [],
+        "requirement_codes": ["aud_1", "btn_2", "men_3", "tun_1"],
+        "leaf_convention": "feature_and_requirement",
+        "empty_sections": "leave_out",
+        "context_headings": [by_number["1.1"], by_number["1.2"]],
+        "back_matter_headings": [by_number["3"]],
+        "document_kind": "requirements_export",
+        "cover_title_lines": [line["j"] for line in cover if "Vireo Television" in line["text"] or line["text"].startswith("Set (VTS)")],
+        "proposals": [
+            {"i": by_number["2"], "action": "rename", "new_title": "Vireo Television Set (VTS)", "reason": "Named after the cover."},
+            {"i": by_number["2.1"], "action": "drop_wrapper", "new_title": "", "reason": "A generic name holding one section."},
+            {"i": by_number["2.4"], "action": "rename", "new_title": "Environment and safety", "reason": "Named from its two sections."},
+        ],
+        "spelling_fixes": [{"i": by_number["2.3.4"], "fixed": "Enclosure"}],
+        "title_policy": "write",
+    }
+    rules = validate_document_answer(answer, headings, doc, cover=cover)
+    assert isinstance(rules, DocumentRules), rules
+    return FileRulebook(document=rules)
+
+
+class _GoldTitles:
+    """A model that writes the hand study's title for each requirement it is shown (matched by the requirement's text). The titles still
+    go through the pass's own checks, so a gold title the checks refused would show up as a mismatch."""
+
+    def __init__(self) -> None:
+        self.by_text = {_norm(n["description"].split("\n\n", 1)[0]): n["title"] for n in GOLD if n["type"] == "Requirement"}
+
+    def requirement_titles(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict[str, dict]:
+        return {k: {"title": self.by_text[_norm(v)]} for k, v in texts_by_id.items() if _norm(v) in self.by_text}
+
+
 @cache
 def _tree(fmt: str, mode: str, tmp_root: str):
     doc = _doc(fmt, tmp_root)
+    rulebook = _study(doc)
     if mode == "BASELINE":
-        return build_baseline_tree(doc)
-    return build_survey_tree(
-        doc,
-        StructureRefusingClient(),
-        grouping_client=SimulatedGrouper(1),
-        embed_client=TitleHashEmbedder(),
-    )
+        tree = build_baseline_tree(doc, rulebook)
+    else:
+        tree = build_survey_tree(
+            doc,
+            StructureRefusingClient(),
+            grouping_client=SimulatedGrouper(1),
+            embed_client=TitleHashEmbedder(),
+            rulebook=rulebook,
+        )
+    write_requirement_titles(tree.nodes, _GoldTitles(), tree.warnings)  # what /level does after either build
+    return tree
 
 
 # --- the gold tree keeps the owner's decisions ---------------------------------------------------------------------------------------
@@ -145,9 +196,7 @@ def test_gold_epic_and_feature_descriptions_are_only_the_files_own_text() -> Non
         if n["description"] and _norm(n["description"]) == _norm(n["title"])
     ]
     assert not invented and not title_echo, (invented, title_echo)
-    assert (
-        sum(1 for n in containers if n["description"]) == 2
-    )  # the top Epic (the context chapter) and Power management (its Note)
+    assert sum(1 for n in containers if n["description"]) == 1  # the top Epic: the context sections
 
 
 def test_gold_derived_marks_are_review_marks_and_the_file_states_no_tags_or_types() -> None:
@@ -204,46 +253,51 @@ def test_every_format_carries_every_code_and_requirement_text(fmt: str, tmp_root
 # --- every format builds the gold tree -----------------------------------------------------------------------------------------------
 
 
-def _gold_projection() -> set[tuple]:
+def _gold_projection(requirement_titles: bool = True) -> set[tuple]:
+    def title(n: dict) -> str:
+        return n["title"] if requirement_titles or n["type"] != "Requirement" else n["customer_id"] or "-"
+
     def path(n: dict) -> tuple[str, ...]:
         chain = []
         while n:
-            chain.append(n["title"])
+            chain.append(title(n))
             n = GOLD_BY_ID.get(n["parent"]) if n["parent"] else None
         return tuple(reversed(chain))
 
-    return {
-        (path(n), n["type"], n["customer_id"], _norm(n["description"]), tuple(n["derived_marks"]))
-        for n in GOLD
-    }
+    return {(path(n), n["type"], n["customer_id"], _norm(n["description"]), tuple(n["derived_marks"])) for n in GOLD}
 
 
-def _tree_projection(tree) -> set[tuple]:
+def _tree_projection(tree, requirement_titles: bool = True) -> set[tuple]:
     by_id = {n.local_id: n for n in tree.nodes}
+
+    def title(n) -> str:
+        return n.title if requirement_titles or n.type.value != "Requirement" else n.customer_id or "-"
 
     def path(n) -> tuple[str, ...]:
         chain = []
         while n:
-            chain.append(n.title)
+            chain.append(title(n))
             n = by_id.get(n.parent_local_id or "")
         return tuple(reversed(chain))
 
     return {
-        (
-            path(n),
-            n.type.value,
-            n.customer_id,
-            _norm(n.description),
-            tuple(getattr(n, "derived_marks", None) or ()),
-        )
+        (path(n), n.type.value, n.customer_id, _norm(n.description), tuple(getattr(n, "derived_marks", None) or ()))
         for n in tree.nodes
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="wave 1 step 3: the generalised builder (clean titles, file-text descriptions, derived marks)",
-)
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("fmt", [_format_param(f) for f in FORMATS])
+def test_every_format_builds_the_gold_structure(fmt: str, mode: str, tmp_root: str) -> None:
+    """Everything but the requirements' own titles, which the title pass writes (wave 1, step 4): the ladder, every Epic and Feature
+    title, every Customer ID, every description and every derived mark."""
+    got, want = _tree_projection(_tree(fmt, mode, tmp_root), False), _gold_projection(False)
+    missing, extra = sorted(want - got), sorted(got - want)
+    assert not missing and not extra, (
+        f"{fmt}/{mode}: {len(missing)} missing, {len(extra)} extra; first missing {missing[:3]}; first extra {extra[:3]}"
+    )
+
+
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("fmt", [_format_param(f) for f in FORMATS])
 def test_every_format_builds_the_gold_tree(fmt: str, mode: str, tmp_root: str) -> None:

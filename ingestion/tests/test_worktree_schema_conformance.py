@@ -338,3 +338,23 @@ def test_changed_since_written_warning_matches_work_item_tree_schema(schema) -> 
     ]
     assert tree.warnings[0].severity == "needs_review"
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_a_grammar_tree_with_marks_file_fields_and_a_suggestion_matches_the_shared_schema(schema, tmp_path) -> None:
+    """The fields the study and With AI review add (derived_marks, file_tags, requirement_type, description_suggestion) are part of the
+    contract the orchestrator reads, with real values, not only their empty defaults."""
+    import sys
+
+    from app.loaders.pdf_loader import load_pdf
+
+    sys.path.insert(0, str(Path(__file__).parent / "fixtures" / "tv_twin"))
+    from build_tv_twin_pdf import build_twin_spec_pdf
+
+    tree = build_baseline_tree(load_pdf(str(build_twin_spec_pdf(tmp_path)[0])))
+    marked = [n for n in tree.nodes if n.derived_marks]
+    assert marked and {m for n in marked for m in n.derived_marks} <= {"TBD", "Should", "Will", "No obligation"}
+    tree.nodes[1].description_suggestion = "Covers the receiver's tuners."
+    tree.nodes[2].file_tags, tree.nodes[2].requirement_type = ["customer-baseline"], "Performance"
+    dumped = tree.model_dump(mode="json")
+    assert dumped["nodes"][1]["description_suggestion"] and dumped["nodes"][2]["file_tags"] == ["customer-baseline"]
+    jsonschema.validate(dumped, schema)

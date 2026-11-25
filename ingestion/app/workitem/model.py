@@ -207,6 +207,11 @@ class WorkItemNode(BaseModel):
     # Built by the document's own grammar (leveling/document_grammar.py): its text is the document's, word for word, and no model pass
     # rewrites it. In-process only, like source_title.
     verbatim: bool = Field(default=False, exclude=True)
+    # The marks a reviewer filters by, read from a requirement's own text (TBD, Should, Will, No obligation): never written to Azure DevOps
+    # and never mixed with the file's own tags (file_tags).
+    derived_marks: list[str] = Field(default_factory=list)
+    # With AI review's suggested wording for this item (app.leveling.suggestions): offered to the reviewer, never applied by itself.
+    description_suggestion: str | None = None
     description: str
     # Per-Requirement, document-derived attribute -- the requirement's own
     # source reference number (e.g. "1.1.2.2"), populated ONLY for a
@@ -260,6 +265,10 @@ class WorkItemNode(BaseModel):
     # content of its own to compare (a title made from the filename, a SURVEY node with no source block).
     content_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
+    # What the file itself states (an ADO-export "Tags" or "Requirement Type" column): written to System.Tags and the Requirement Type
+    # field, and a file-stated type wins over any model-proposed one (owner decision, 2026-11-25). Empty / None when the file states none.
+    file_tags: list[str] = Field(default_factory=list)
+    requirement_type: str | None = None
     # Populated by ALL FOUR node-building paths (BASELINE, the deterministic
     # heading/ID-tree path, the deterministic span-fold, and SURVEY's LLM
     # branch) -- not SURVEY-only, despite this field's original SURVEY-only

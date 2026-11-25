@@ -1196,6 +1196,7 @@ def _lines_to_paragraphs(lines: list[dict], code_shape: CodeShape | None = None)
     prev_bottom = lines[0]["bottom"]
     prev_size = current_size
     previous_line = lines[0]
+    current_lefts = [lines[0].get("x0", 0.0)]
     for line in lines[1:]:
         size = _line_size(line)
         gap = line["top"] - prev_bottom
@@ -1211,11 +1212,22 @@ def _lines_to_paragraphs(lines: list[dict], code_shape: CodeShape | None = None)
         ended_short = bool(_SENTENCE_END_PATTERN.search(prev_line["text"])) and (
             right_edge - prev_line.get("x1", right_edge) > _PARAGRAPH_SHORT_LINE_EMS * prev_size
         )
-        if same_size and small_gap and not starts_requirement and not ended_short:
+        # The line starts well left of a paragraph whose lines all share one indent: a new block set at the page margin (a full-width
+        # Note after a requirement's indented trace), not a continuation. One line before it is not enough: a paragraph whose first line
+        # is indented continues at the margin.
+        left = line.get("x0", 0.0)
+        outdented = (
+            len(current_lefts) >= 2
+            and max(current_lefts) - min(current_lefts) <= 1.0
+            and left < min(current_lefts) - _PARAGRAPH_OUTDENT_EMS * max(size, prev_size)
+        )
+        if same_size and small_gap and not starts_requirement and not ended_short and not outdented:
             current_texts.append(line["text"])
+            current_lefts.append(left)
         else:
             paragraphs.append((_join_lines(current_texts), current_top, current_size, current_bold))
             current_texts = [line["text"]]
+            current_lefts = [left]
             current_top = line["top"]
             current_size = size
             current_bold = _line_is_bold(line)
@@ -1244,6 +1256,8 @@ def _body_right_edge(lines: list[dict]) -> float:
 # How far short of the right edge (in ems of the line's font size) a sentence-ending line must stop to be read as a paragraph's
 # last line. A justified or ragged-right body line stops within about one or two characters of the edge; 4 ems is clear of both.
 _PARAGRAPH_SHORT_LINE_EMS = 4.0
+# How far left of an indented paragraph (in ems) a line must start to open a new block at the margin.
+_PARAGRAPH_OUTDENT_EMS = 2.0
 _LINE_END_HYPHEN_PATTERN = re.compile(r"[^\W\d_]-$")
 
 
@@ -1881,6 +1895,7 @@ def load_pdf(
         size_ranks: dict[float, int] = {}
         body_size = _dominant_body_size(all_pages_lines)
         outline_positions = _outline_heading_positions(path)
+        matched_outline: set[tuple[int, str]] = set()
 
         for page_number, page in enumerate(pages, start=1):
             # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
@@ -2279,7 +2294,14 @@ def load_pdf(
                     start = offset
                     end = start + len(text)
                     offset = end + 1
-                    outline_depth = outline_positions.get((page_number, text.strip()))
+                    # An outline entry points at its heading's page, or at the foot of the page before it when the heading opens the next
+                    # page (the bookmark is set before the page break). Each entry is matched once, so repeated text is not a heading twice.
+                    outline_depth = None
+                    for key in ((page_number, text.strip()), (page_number - 1, text.strip())):
+                        if key in outline_positions and key not in matched_outline:
+                            outline_depth = outline_positions[key]
+                            matched_outline.add(key)
+                            break
                     heading_level: int | None = None
                     number_label: str | None = None
                     if outline_depth is not None:

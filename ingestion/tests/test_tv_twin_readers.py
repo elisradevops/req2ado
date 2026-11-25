@@ -56,3 +56,20 @@ def test_word_numbered_headings_reach_the_document_grammar(tmp_root: str) -> Non
     grammar = learn_grammar(_docx(tmp_root))
     assert grammar is not None
     assert grammar.code.opens("btn_2 The volume shall rise by one step.") and "Satisfies" in grammar.part_labels
+
+
+def test_a_note_set_at_the_margin_after_an_indented_trace_is_its_own_paragraph(tmp_root: str) -> None:
+    blocks = _pdf(tmp_root).blocks
+    assert not [b.text[:60] for b in blocks if "Satisfies:" in b.text and "Note:" in b.text]
+    assert sum(1 for b in blocks if b.text.startswith("Note:")) == 6
+
+
+def test_a_heading_whose_bookmark_points_to_the_page_before_is_still_a_heading(tmp_root: str) -> None:
+    """The bookmark of "2.3.2.2 Bluetooth pairing" is set at the foot of the page before the one its heading opens."""
+    heading = next(b for b in _pdf(tmp_root).blocks if b.text == "2.3.2.2 Bluetooth pairing")
+    assert heading.kind.value == "heading" and heading.heading_level == 4
+
+
+def test_items_word_bullets_through_their_style_are_list_items(tmp_root: str) -> None:
+    items = [b for b in _docx(tmp_root).blocks if b.text in ("Home;", "Back;", "Guide;")]
+    assert len(items) == 3 and all(b.kind.value == "list_item" for b in items)

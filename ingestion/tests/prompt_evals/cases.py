@@ -1541,3 +1541,61 @@ CASES += [
         frozenset({"grammar", "profile"}),
     ),
 ]
+
+
+# --- requirement_titles v1: a short title per requirement, from the requirement's own words ---------------------------------------------
+# The TV twin's requirements (tests/fixtures/tv_twin). Code keeps a title only when app.leveling.requirement_titles.checked_title accepts
+# it, so the eval asks the same: every title short, without an obligation word or code, and grounded in its own requirement.
+
+_TITLE_TEXTS = {
+    "r1": "The terrestrial tuner shall lock to a selected channel within 1.5 s.",
+    "r2": "The receiver shall mute its speakers within 100 ms of headphones being plugged in.",
+    "r3": "The television set shall accept a mains supply of 100 V to 240 V at 50 Hz or 60 Hz.",
+    "r4": "The remote shall send its commands over infrared with the NEC-32 code set.",
+    "r5": "Les touches de volume doivent être reconnaissables au toucher.",
+}
+
+
+def _check_titles(result: object) -> Checks:
+    from app.leveling.requirement_titles import checked_title
+
+    ok = isinstance(result, dict)
+    titles = {k: (v.get("title") if isinstance(v, dict) else None) for k, v in (result.items() if ok else [])}
+    refused = [k for k, text in _TITLE_TEXTS.items() if checked_title(titles.get(k), text) is None]
+    return {
+        "every_id": (ok and set(titles) == set(_TITLE_TEXTS), "an id omitted or invented"),
+        "accepted": (not refused, f"titles code would refuse (ungrounded, an obligation word, a code or too long): {refused}"),
+        "language": (bool(titles.get("r5")) and "volume" in str(titles.get("r5")).lower(), "the French requirement's title not in French"),
+    }
+
+
+_GOOD_TITLES = {
+    "r1": "Terrestrial tuner locks to a channel within 1.5 s",
+    "r2": "Speakers mute when headphones are plugged in",
+    "r3": "Mains supply of 100 V to 240 V at 50 Hz or 60 Hz",
+    "r4": "Remote sends commands over infrared with NEC-32",
+    "r5": "Touches de volume reconnaissables au toucher",
+}
+
+
+def _titles_reply(**changes: str | None) -> str:
+    titles = {**_GOOD_TITLES, **changes}
+    return _j({k: {"title": v} for k, v in titles.items() if v is not None})
+
+
+CASES += [
+    Case(
+        "requirement_titles",
+        "short_grounded_titles",
+        lambda c: c.requirement_titles(dict(_TITLE_TEXTS)),
+        _check_titles,
+        [_titles_reply()],
+        [
+            _titles_reply(r1="Fast digital tuner lock"),  # "fast", "digital": not in the requirement
+            _titles_reply(r2="Speakers shall mute for headphones"),  # an obligation word
+            _titles_reply(r5="Volume keys recognisable by touch"),  # translated
+            _titles_reply(r4=None),  # an id omitted
+        ],
+        frozenset({"titles"}),
+    ),
+]
