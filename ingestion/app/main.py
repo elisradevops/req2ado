@@ -105,6 +105,7 @@ from app.request_identity import (
 from app.source_excerpt import SourceExcerpt, excerpt_for_span, parse_cached
 from app.study.file_rules import study_tables, table_details
 from app.study.model_rules import check_rulebook, document_details, prestudy, prestudy_version
+from app.study.reading import file_reading
 from app.study.rulebook import FileRulebook, rulebook_from_json, rulebook_to_json
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
@@ -2526,7 +2527,10 @@ def _prestudy_response(doc: CanonicalDoc, rulebook: FileRulebook, source: str, w
         rules += [f"Headings that begin with '{r.label}{r.separator}' are {r.type}s." for r in document.labels]
         rules += [f"Headings at depth {depth + 1} are {name}s." for depth, name in document.depth_types]
         document_part = document_details(doc, document)
+    reading = file_reading(doc, rulebook)  # the new-job page's verdict, decisions and outline (app.study.reading)
     details = {"approximate": document_part is not None, "tables": tables, "document": document_part} if tables or document_part else None
+    if reading is not None:
+        details = {**(details or {"approximate": False, "tables": tables, "document": document_part}), "reading": reading}
     return PrestudyResponse(
         rulebook=rulebook_to_json(rulebook),
         hash=rulebook.hash,

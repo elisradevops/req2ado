@@ -46,6 +46,41 @@ interface Props {
   onSaveEdit: (rulebook: Record<string, unknown>) => Promise<string | null>;
 }
 
+/** With AI review's optional summary of the file: its text once written, one line while it is written (Start never waits), and "Write it
+ * again". Shared by this card and the study panel, so the summary shows whichever of the two the page uses. */
+export function AiSummaryBlock({ aiSummary, onRewriteSummary }: { aiSummary: Props['aiSummary']; onRewriteSummary: () => void }): React.ReactElement {
+  return (
+    <>
+      {aiSummary.status === 'ready' && aiSummary.text && (
+        <div className="flex flex-col gap-1">
+          <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
+          <span className="text-xs text-ink-3">AI summary, written by a model from the document’s headings and opening text. Check it against the file.</span>
+        </div>
+      )}
+      {aiSummary.status === 'pending' && (
+        <p className="flex items-center gap-2 text-xs text-ink-3" role="status" data-testid="ai-summary-pending">
+          <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
+        </p>
+      )}
+      {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
+      {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
+      {aiSummary.status !== 'idle' && (
+        <Button
+          variant="outline"
+          size="sm"
+          className={aiSummary.status === 'pending' ? 'cursor-default self-start opacity-60' : 'self-start'}
+          aria-disabled={aiSummary.status === 'pending'}
+          onClick={() => {
+            if (aiSummary.status !== 'pending') onRewriteSummary();
+          }}
+        >
+          Write it again
+        </Button>
+      )}
+    </>
+  );
+}
+
 /** What is being waited on, as one line: the step (of two), and the part of the document for the second. Null when nothing is. */
 export function readingLine(rules: FileReadingRules, study: FileReadingStudy): string | null {
   if (rules.status === 'idle' || rules.status === 'loading') return "Reading the file's layout · step 1 of 2";
@@ -94,32 +129,7 @@ export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary
           </div>
         )}
 
-        {aiSummary.status === 'ready' && aiSummary.text && (
-          <div className="flex flex-col gap-1">
-            <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
-            <span className="text-xs text-ink-3">AI summary, written by a model from the document’s headings and opening text. Check it against the file.</span>
-          </div>
-        )}
-        {aiSummary.status === 'pending' && (
-          <p className="flex items-center gap-2 text-xs text-ink-3" role="status" data-testid="ai-summary-pending">
-            <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
-          </p>
-        )}
-        {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
-        {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
-        {aiSummary.status !== 'idle' && (
-          <Button
-            variant="outline"
-            size="sm"
-            className={aiSummary.status === 'pending' ? 'cursor-default self-start opacity-60' : 'self-start'}
-            aria-disabled={aiSummary.status === 'pending'}
-            onClick={() => {
-              if (aiSummary.status !== 'pending') onRewriteSummary();
-            }}
-          >
-            Write it again
-          </Button>
-        )}
+        <AiSummaryBlock aiSummary={aiSummary} onRewriteSummary={onRewriteSummary} />
 
         <section className="flex flex-col gap-1.5" aria-label="Structure">
           <h3 className="text-xs font-semibold text-ink-2">From the file’s text and structure</h3>

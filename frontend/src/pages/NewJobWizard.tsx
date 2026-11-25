@@ -7,7 +7,11 @@ import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore'
 import { loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
-import { ModeCards } from '../components/ModeCards';
+import { MODE_COPY, ModeCards } from '../components/ModeCards';
+import { FileStudyPanel } from '../components/FileStudyPanel';
+import { BuildPreview } from '../components/BuildPreview';
+import { AboutFilePanel } from '../components/AboutFilePanel';
+import { decisionPairs } from '../utils/buildPreview';
 import { AreaPathPicker } from '../components/AreaPathPicker';
 import { IterationPathPicker } from '../components/IterationPathPicker';
 import { StatePicker } from '../components/StatePicker';
@@ -32,6 +36,7 @@ import {
   type DocumentOverview,
   type DocumentStudy,
   type RulebookView,
+  type ProposalDecision,
 } from '../api/jobs';
 import { estimateLine, formatTokenCount, formatUsdRange, tokenForecastLine } from '../utils/eta';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -46,7 +51,7 @@ import { SectionCard } from '../ui/SectionCard';
 import { KbReadinessStrip } from '../components/KbReadinessStrip';
 import { OverviewLines } from '../components/DocumentOverviewCard';
 import { type RulesStatus } from '../components/FileRulesCard';
-import { FileReadingCard, readingLine } from '../components/FileReadingCard';
+import { AiSummaryBlock, FileReadingCard, readingLine } from '../components/FileReadingCard';
 import { type StudyStatus } from '../components/DocumentStudyCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
@@ -64,13 +69,12 @@ import { describeEstimateBasis } from '../utils/modelFacts';
 // don't exist as separate screens, since target/options/review all live on
 // one page today. Two honest stages instead of a stage count the UI can't
 // back up.
-// SURVEY confirms what was read on a page of its own (it waits there for the optional AI summary); BASELINE has nothing to wait for, so
-// its configuration and the check of what was read are one page that holds Start (P5). Step numbers: BASELINE 1-2, SURVEY 1-3.
-const SURVEY_STEPS = ['Upload document', 'Configure & review', 'Confirm understanding'];
-const BASELINE_STEPS = ['Upload document', 'Check and start'];
+// One page after the upload, in both modes (owner decision, 2026-11-25): what was read from the file, how to read it, where it lands, then
+// Start. With AI review's optional summary is written meanwhile and goes with the job if it is ready; Start never waits for it.
+const STEPS = ['Upload document', 'Check and start'];
 
-function stepsFor(mode: 'baseline' | 'survey'): string[] {
-  return mode === 'baseline' ? BASELINE_STEPS : SURVEY_STEPS;
+function stepsFor(_mode: 'baseline' | 'survey'): string[] {
+  return STEPS;
 }
 
 /** Whether this step is the one that shows what was read from the file and starts the job. */
@@ -279,50 +283,48 @@ const AI_SUMMARY_WAIT_MS = 90_000;
 
 // The facts a run is about to act on: the file and what was found in it, the mode and model, and where it lands. The first thing in the
 // "This run" rail on steps 2 and 3, so the reviewer sees the same summary beside the control that moves them on.
+// The file being read, under the page title (the approved mockup): its name, its size and "Change document". Said once; the rail does not repeat it.
+function FileStrip({ file, preview, onChangeDocument }: { file: File | null; preview: PreviewResult | null; onChangeDocument: () => void }): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-hairline bg-surface-alt px-3 py-2" data-testid="file-strip">
+      <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} className="h-6 w-6 flex-none" />
+      {file && (
+        <span className="min-w-0 truncate text-sm font-semibold text-ink-1" title={file.name}>
+          {file.name}
+        </span>
+      )}
+      <span className="font-mono text-meta text-ink-3">
+        {preview ? `${preview.blockCount} blocks · ${preview.sectionCount} sections · ${preview.figureCount} figures` : '--'}
+      </span>
+      <Button variant="outline" size="sm" className="ml-auto" onClick={onChangeDocument}>
+        Change document
+      </Button>
+    </div>
+  );
+}
+
 function RunFacts({
-  file,
-  preview,
   mode,
   model,
   project,
   areaPath,
   iterationPath,
   state,
-  onChangeDocument,
 }: {
-  file: File | null;
-  preview: PreviewResult | null;
   mode: 'baseline' | 'survey';
   model: string;
   project: string;
   areaPath: string;
   iterationPath: string;
   state: string;
-  onChangeDocument: () => void;
 }): React.ReactElement {
   return (
     <>
-              <div className="flex items-start gap-3">
-                <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} className="h-8 w-8 flex-none" />
-                <div className="min-w-0 flex-1">
-                  {file && (
-                    <p className="truncate text-sm font-semibold text-ink-1" title={file.name}>
-                      {file.name}
-                    </p>
-                  )}
-                  <p className="font-mono text-meta text-ink-3">
-                    {preview ? `${preview.blockCount} blocks · ${preview.sectionCount} sections · ${preview.figureCount} figures` : '--'}
-                  </p>
-                </div>
-                <Button variant="ghost" size="sm" onClick={onChangeDocument}>
-                  Change document
-                </Button>
-              </div>
-              <dl className="flex flex-col gap-1 border-t border-hairline pt-3 text-xs">
+              <dl className="flex flex-col gap-1 text-xs">
                 <div className="flex gap-2">
                   <dt className="w-12 flex-none text-ink-3">Mode</dt>
                   <dd className="min-w-0 text-ink-1">
-                    {mode.toUpperCase()}
+                    {MODE_COPY[mode].title}
                     {mode === 'survey' && (
                       <>
                         {' · '}
@@ -358,7 +360,8 @@ export function NewJobWizard(): React.ReactElement {
     const remembered = loadLastJobChoices(userId);
     return { ...withRememberedChoices(draft, remembered, { applyMode: false }), lastUsedMode: remembered?.mode };
   });
-  const [step, setStep] = useState<1 | 2 | 3>(initial.step);
+  // A draft kept from before the page became one (it had a third step) comes back on the last step there is.
+  const [step, setStep] = useState<1 | 2 | 3>(Math.min(initial.step, STEPS.length) as 1 | 2);
   // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
   const stepRootRef = useRef<HTMLDivElement>(null);
   // Only a step the person has not seen yet fades in; going back to one they have seen is an instant swap.
@@ -459,7 +462,7 @@ export function NewJobWizard(): React.ReactElement {
   // Bumped by "Write it again": a new value re-runs the effect below, which asks the model once more.
   const [summaryRun, setSummaryRun] = useState(0);
   useEffect(() => {
-    if (step !== 3 || mode !== 'survey' || !summaryInput) {
+    if (!isFinalStep(step, mode) || mode !== 'survey' || !summaryInput) {
       setAiSummary({ status: 'idle' });
       return undefined;
     }
@@ -675,6 +678,17 @@ export function NewJobWizard(): React.ReactElement {
       ? { readWith: rules.model ?? defaultModelName, jobUses: modelForRules.current ?? defaultModelName }
       : null;
 
+  // What was read from a studied document (the verdict, the decisions, the outline), and the user's Accept / Keep on each proposal. Decisions
+  // start from what the stored rulebook holds; they are saved with it when the job starts, so the job applies exactly what was decided.
+  const reading = rules.status === 'ready' ? (rules.view?.details?.reading ?? null) : null;
+  const [decisions, setDecisions] = useState<Record<string, ProposalDecision | undefined>>({});
+  useEffect(() => {
+    setDecisions(Object.fromEntries((reading?.decisions ?? []).map((d) => [d.headingId, d.decision ?? undefined])));
+  }, [reading]);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  // The study needs a model, in both modes (owner decision, 2026-11-25): with no model connection Start is blocked, with the reason.
+  const noModel = rules.status === 'ready' && Boolean(rules.view?.skipped);
+
   // Reading and analyzing the document (the Study): the reading the job itself does before Analyze, done here while the user checks the page,
   // so the job reuses it (ingestion keeps it by user, text, rulebook and model) instead of reading again. It starts once the file's layout is
   // settled, because it reads the tables by the rulebook shown, and with the model the job will use (BASELINE: the default). A different file,
@@ -781,6 +795,16 @@ export function NewJobWizard(): React.ReactElement {
     isSubmittingRef.current = true;
     setIsSubmitting(true);
     try {
+      // The decisions made on this page are stored with the rulebook first, so the job is built from exactly what the user decided.
+      let rulebookId = rules.view?.id ? rules.view.id : undefined;
+      const pairs = decisionPairs(decisions);
+      const stored = decisionPairs(Object.fromEntries((reading?.decisions ?? []).map((d) => [d.headingId, d.decision ?? undefined])));
+      if (reading && rules.view && JSON.stringify(pairs) !== JSON.stringify(stored)) {
+        const edited = structuredClone(rules.view.rulebook) as { document?: Record<string, unknown> | null };
+        if (edited.document) edited.document = { ...edited.document, decisions: pairs };
+        const view = await editRules(file, edited, rules.model);
+        rulebookId = view.id || undefined;
+      }
       const { jobId } = await submitJob({
         file,
         areaPath,
@@ -791,7 +815,7 @@ export function NewJobWizard(): React.ReactElement {
         dedupScope: dedupScope === 'project' ? 'project' : undefined,
         model: mode === 'survey' ? model || undefined : undefined,
         // The rulebook shown in the card: the job is built from exactly it (only when the study learned something worth storing).
-        rulebookId: rules.view?.id ? rules.view.id : undefined,
+        rulebookId,
         // The AI summary goes with the job only if it was ready: the start button never waits for it.
         documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
@@ -959,7 +983,31 @@ export function NewJobWizard(): React.ReactElement {
   // Start needs a destination. On BASELINE's single page it is chosen on the same page, so the bar says what Start is waiting for.
   const destinationMissing = !areaPath || (hasAdoSession && !project);
   // What was read from the file, shared by both final pages (SURVEY step 3, BASELINE step 2).
-  const understanding = (
+  const summaryBlock = mode === 'survey' ? <AiSummaryBlock aiSummary={aiSummary} onRewriteSummary={() => setSummaryRun((n) => n + 1)} /> : null;
+  const studyPanel = rulesBusy ? (
+    <>
+      <FileStudyPanel status="studying" startedAt={rules.startedAt} decisions={decisions} onDecide={() => undefined} onOpenAbout={() => undefined} />
+      {summaryBlock}
+    </>
+  ) : reading ? (
+    <>
+      {summaryBlock}
+      <FileStudyPanel
+        status="ready"
+        reading={reading}
+        decisions={decisions}
+        onDecide={(headingId, decision) => setDecisions((current) => ({ ...current, [headingId]: decision }))}
+        onOpenAbout={() => setAboutOpen(true)}
+      />
+      <AboutFilePanel
+        open={aboutOpen}
+        onOpenChange={setAboutOpen}
+        reading={reading}
+        codes={((rules.view?.rulebook as { document?: { grammar?: { requirement_codes?: string[] } } })?.document?.grammar?.requirement_codes) ?? []}
+      />
+    </>
+  ) : null;
+  const understanding = studyPanel ?? (
     <FileReadingCard
       overview={documentOverview ?? undefined}
       leftOut={preview?.leftOut}
@@ -974,14 +1022,6 @@ export function NewJobWizard(): React.ReactElement {
         modelHint: rulesModelHint,
       }}
       study={study}
-      knowledgeBase={
-        mode === 'survey' ? (
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-ink-2">Your knowledge base</span>
-            <KbReadinessStrip />
-          </div>
-        ) : undefined
-      }
       onRelearn={() => file && void learnRules(file, true)}
       onStopWaiting={stopWaiting}
       onReadNow={readNow}
@@ -991,16 +1031,10 @@ export function NewJobWizard(): React.ReactElement {
   const startBar = (
         // sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through.
         <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock">
-          {/* BASELINE's single page goes back to the upload; SURVEY's step 3 back to its configuration. */}
-          {mode === 'baseline' ? (
-            <Button variant="outline" onClick={handleBack}>
-              Back
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={() => setStep(2)}>
-              ← Back to configure
-            </Button>
-          )}
+          {/* One page in both modes: Back goes to the upload. */}
+          <Button variant="outline" onClick={handleBack}>
+            Back
+          </Button>
           {/* Below lg the rail comes after this bar, so Start would be pressed without the destination in view: say it here. */}
           {areaPath && (
             <p className="w-full min-w-0 break-words font-mono text-xs text-ink-2 lg:hidden">
@@ -1014,92 +1048,25 @@ export function NewJobWizard(): React.ReactElement {
           )}
           {/* Why Start waits, beside Start at every width (the card above holds the one status region and the timer). */}
           {(rulesBusy || studyBusy) && (
-            <p className="flex w-full flex-wrap items-center gap-2 text-xs text-ink-2" data-testid="start-waits">
-              <span>Start waits for: {readingLine(rules, study) ?? 'the file to be read'}.</span>
-              <Button size="sm" variant="outline" onClick={stopWaiting}>
-                Stop waiting
+            <p className="w-full text-xs text-ink-2" data-testid="start-waits">
+              Start waits for: {readingLine(rules, study) ?? 'the file to be read'}.
+            </p>
+          )}
+          {noModel && (
+            <p className="flex w-full flex-wrap items-center gap-2 text-xs text-ink-2" data-testid="start-needs-model">
+              <span>An AI model is needed to read the file, in both modes. Connect a model, then read the file again.</span>
+              <Button size="sm" variant="outline" onClick={() => file && void learnRules(file, true)}>
+                Read the file again
               </Button>
             </p>
           )}
           <SafetyLine variant="wizard" />
-          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing} className="ml-auto">
+          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing || noModel} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : studyBusy ? 'Reading the document…' : 'Looks right — start job'}
           </Button>
         </div>
   );
-
-  if (step === 3) {
-    return (
-      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
-        <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
-        <Stepper steps={steps} states={wizardStepStates(2, mode)} />
-        {/* Same two columns as step 2 (DESIGN.md §11.2.5): the question and its action on the left, the "This run" rail kept on the right so
-            the file, the mode, where it lands and the estimate are beside Start (owner decision, 2026-11-12). */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-4">
-        {understanding}
-        {startBar}
-        </div>
-        <aside aria-label="This run" className="flex min-w-0 flex-col gap-4 lg:self-start">
-          <SectionCard title="This run">
-            <div className="flex flex-col gap-3">
-              <RunFacts
-                file={file}
-                preview={preview}
-                mode={mode}
-                model={model}
-                project={project}
-                areaPath={areaPath}
-                iterationPath={iterationPath}
-                state={state}
-                onChangeDocument={handleChangeDocument}
-              />
-              <PreviousRunLine previousRuns={previousRuns} />
-              {selectedEstimateLine && (
-                <div className="flex flex-wrap items-baseline gap-2.5 border-t border-hairline pt-3">
-                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine.value}</span>
-                  <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
-                  {/* The basis is said here once; the mode card shows the range only. */}
-                  {estimateBasis && <span className="basis-full text-meta text-ink-3">{estimateBasis}</span>}
-                </div>
-              )}
-              {forecastLine && (
-                <div className="flex flex-wrap items-baseline gap-2.5">
-                  <span className="font-mono text-sm font-semibold tabular-nums text-ink-1">{forecastLine.value}</span>
-                  <span className="text-xs text-ink-3">{forecastLine.note}</span>
-                </div>
-              )}
-            </div>
-          </SectionCard>
-        </aside>
-        </div>
-        {forecast && (
-          <ConfirmDialog
-            open={costConfirmOpen}
-            onOpenChange={setCostConfirmOpen}
-            title="Start a large SURVEY run?"
-            description={
-              <>
-                With {model || (modelListing?.recommended ? `your default model (${modelListing.recommended})` : 'your default model')}, this run is
-                forecast to use roughly {formatTokenCount(forecast.inputTokens.low + forecast.outputTokens.low)} –{' '}
-                {formatTokenCount(forecast.inputTokens.high + forecast.outputTokens.high)} model tokens (input and output),{' '}
-                {forecast.costUsd ? `about ${formatUsdRange(forecast.costUsd)}` : 'no price is set for this model'}. It is a rough forecast made
-                before the run, and your account is billed for what the run really uses.
-                <span className="mt-2 block">Plus a short pre-study read of the file’s layout, not counted here.</span>
-              </>
-            }
-            confirmLabel="Start SURVEY run"
-            onConfirm={() => {
-              setCostConfirmOpen(false);
-              void handleSubmit();
-            }}
-            cancelVariant="outline"
-          />
-        )}
-      </div>
-    );
-  }
 
   return (
     <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
@@ -1108,12 +1075,15 @@ export function NewJobWizard(): React.ReactElement {
         description={finalStep ? 'Set where it writes to and check what was read from the file before it runs' : 'Review the parsed document and set where it writes to'}
       />
       <Stepper steps={steps} states={wizardStepStates(1, mode)} />
+      <FileStrip file={file} preview={preview} onChangeDocument={handleChangeDocument} />
       {/* DESIGN.md §11.2.5. Left: the decision path, in the order an engineer decides (how to read it, where it lands, then
           the folded options). Right: a quiet summary rail that reads the choices back and holds the action, so the primary
           button is in view without scrolling past the mode cards. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-4">
-          {/* DESIGN.md §11.2.5, §16.15: the question sits on the canvas, so the two mode cards are the only cards here. */}
+        <div className="flex min-w-0 flex-col gap-7">
+          {/* The approved mockup's order: what was read from the file, how to read it, where it lands, then the folded options and Start.
+              Headings sit on the page, not in cards. */}
+          {finalStep && understanding}
           <section aria-labelledby="wizard-mode-heading" className="flex flex-col gap-2.5">
             <h2 id="wizard-mode-heading" className="text-title">
               How should it read the document?
@@ -1134,11 +1104,11 @@ export function NewJobWizard(): React.ReactElement {
             modelsError={modelsError}
           />
           </section>
-          {/* BASELINE: what was read from the file comes right after the mode cards, before the destination, so the reading is in view (on a phone the
-              destination would push it a screen and a half down) and in the same order for the keyboard and for a screen reader. */}
-          {finalStep && understanding}
-          <SectionCard title="Destination in Azure DevOps">
-            <div className="flex flex-col gap-3">
+          <section aria-labelledby="wizard-destination-heading" className="flex flex-col gap-2.5">
+            <h2 id="wizard-destination-heading" className="text-title">
+              Where do the items land?
+            </h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {hasAdoSession ? (
                 <>
                   <ProjectPicker value={project} onChange={setProject} />
@@ -1152,7 +1122,7 @@ export function NewJobWizard(): React.ReactElement {
                 <TextField label="Area path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
               )}
             </div>
-          </SectionCard>
+          </section>
           {/* Folded, but never unknown: the summary line states what each folded choice currently is. */}
           <details className="rounded-md border border-hairline bg-surface">
             <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3">
@@ -1225,21 +1195,20 @@ export function NewJobWizard(): React.ReactElement {
           <SectionCard title="This run">
             <div className="flex flex-col gap-3">
               <RunFacts
-                file={file}
-                preview={preview}
                 mode={mode}
                 model={model}
                 project={project}
                 areaPath={areaPath}
                 iterationPath={iterationPath}
                 state={state}
-                onChangeDocument={handleChangeDocument}
               />
               <PreviousRunLine previousRuns={previousRuns} />
               <div className="flex flex-col gap-2 border-t border-hairline pt-3">
                 <div className="flex flex-wrap items-baseline gap-2.5">
                   <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine?.value ?? '--'}</span>
                   <span className="text-xs text-ink-3">{selectedEstimateLine?.note ?? 'typically, once it starts'}</span>
+                  {/* The basis is said here once; the mode card shows the range only. */}
+                  {estimateBasis && <span className="basis-full text-meta text-ink-3">{estimateBasis}</span>}
                 </div>
                 {mode === 'survey' && selectedEstimate?.basis === 'blended' && selectedEstimate.nearSizeSampleCount === 0 && (
                   <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
@@ -1265,31 +1234,34 @@ export function NewJobWizard(): React.ReactElement {
                   <KbReadinessStrip />
                 </div>
               )}
-              {/* BASELINE starts from the sticky bar on the left, which carries these. */}
-              {!finalStep && (
-              <div className="flex flex-col gap-3 border-t border-hairline pt-3">
-                <SafetyLine variant="wizard" />
-                {/* The destination can sit below the fold on the left; say what the disabled action is waiting for. */}
-                {(!areaPath || (hasAdoSession && !project)) && (
-                  <p className="text-xs text-ink-2">
-                    {hasAdoSession && !project ? 'Choose a team project and an area path to continue.' : 'Choose an area path to continue.'}
-                  </p>
-                )}
-                <div className="flex items-center gap-3">
-                  <Button variant="outline" onClick={handleBack}>
-                    Back
-                  </Button>
-                  <Button onClick={() => setStep(3)} disabled={destinationMissing} className="ml-auto">
-                    <ArrowRight className="h-3.5 w-3.5" />
-                    Continue
-                  </Button>
-                </div>
-              </div>
-              )}
             </div>
           </SectionCard>
+          {finalStep && reading && <BuildPreview reading={reading} decisions={decisions} />}
         </aside>
       </div>
+      {forecast && (
+        <ConfirmDialog
+          open={costConfirmOpen}
+          onOpenChange={setCostConfirmOpen}
+          title="Start a large With AI review run?"
+          description={
+            <>
+              With {model || (modelListing?.recommended ? `your default model (${modelListing.recommended})` : 'your default model')}, this run is
+              forecast to use roughly {formatTokenCount(forecast.inputTokens.low + forecast.outputTokens.low)} –{' '}
+              {formatTokenCount(forecast.inputTokens.high + forecast.outputTokens.high)} model tokens (input and output),{' '}
+              {forecast.costUsd ? `about ${formatUsdRange(forecast.costUsd)}` : 'no price is set for this model'}. It is a rough forecast made
+              before the run, and your account is billed for what the run really uses.
+              <span className="mt-2 block">Plus a short pre-study read of the file’s layout, not counted here.</span>
+            </>
+          }
+          confirmLabel="Start the run"
+          onConfirm={() => {
+            setCostConfirmOpen(false);
+            void handleSubmit();
+          }}
+          cancelVariant="outline"
+        />
+      )}
     </div>
   );
 }

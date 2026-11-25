@@ -229,6 +229,48 @@ export interface RulebookDetails {
   }[];
   /** A document's headings the rules state a type for: an estimate, never exact. */
   document?: { typeCounts: LadderCounts; samples: Partial<Record<string, RulebookSample[]>>; approximate: true } | null;
+  /** What the new-job page shows about a studied document (ingestion's app.study.reading); absent for a spreadsheet or an older rulebook. */
+  reading?: FileReading | null;
+}
+
+/** One Epic or Feature the job will build, with every proposal undecided (the file's original). */
+export interface ReadingOutlineItem {
+  id: string;
+  parent: string | null;
+  type: 'Epic' | 'Feature';
+  title: string;
+  /** The heading it was built from, which a decision names; null for the document's own Epic. */
+  headingId: string | null;
+  requirements: number;
+}
+
+export type ProposalDecision = 'accept' | 'keep';
+
+/** A structure change the study proposes for one heading: never applied until the user accepts it. */
+export interface ReadingDecision {
+  headingId: string;
+  action: 'rename' | 'drop_wrapper';
+  title: string;
+  newTitle: string | null;
+  reason: string;
+  decision: ProposalDecision | null;
+}
+
+/** The verdict, the decisions, the fixes and the outline of a studied document. */
+export interface FileReading {
+  kind: 'requirements_export' | 'requirements_spec' | 'prose_spec' | 'other' | null;
+  coverTitle: string | null;
+  requirements: number;
+  withIds: number;
+  epics: number;
+  features: number;
+  outline: ReadingOutlineItem[];
+  outlineMore: number;
+  decisions: ReadingDecision[];
+  fixes: { headingId: string; from: string; to: string }[];
+  examples: { customerId: string; title: string; under: string | null }[];
+  leftOut: { text: string; page?: number | null; pageEnd?: number | null }[];
+  context: string[];
 }
 
 // Reads how the file states its structure (the model is asked, with the file attached; a rulebook stored for this user and file is returned without
