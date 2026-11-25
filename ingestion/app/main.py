@@ -90,6 +90,7 @@ from app.leveling.study import (
     study_result_version,
 )
 from app.leveling.study_store import StudyStore
+from app.leveling.suggestions import write_suggestions
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -2431,6 +2432,8 @@ async def _survey_level(
         rubric_report,
     )
     tree = await run_in_threadpool(_with_requirement_titles, tree, _rulebook_of(doc), client, user_id)
+    # With AI review offers wording changes for the items the document's grammar built; they are never applied (app.leveling.suggestions).
+    await run_in_threadpool(write_suggestions, tree.nodes, client, tree.warnings, user_id)
     return tree
 
 
