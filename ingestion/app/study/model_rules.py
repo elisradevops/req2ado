@@ -51,12 +51,16 @@ from app.study.file_rules import (
 )
 from app.study.heading_rules import MIN_LABELLED, MIN_LABELLED_SHARE
 from app.study.rulebook import (
+    DOCUMENT_KINDS,
     FRONT_MATTER_ROLES,
     LADDER,
+    PROPOSAL_ACTIONS,
+    TITLE_POLICIES,
     DocumentRules,
     FileRulebook,
     FrontMatterPart,
     LabelRule,
+    Proposal,
     RuleSpec,
     fold,
 )
@@ -550,7 +554,8 @@ def _leading_patterns(headings: list[dict]) -> list[dict]:
     ][:12]
 
 
-def document_sample(doc: CanonicalDoc) -> dict:
+def document_sample(doc: CanonicalDoc, cover: list[dict] | None = None) -> dict:
+    """The outline the model reads. `cover` is cover_lines() of the WHOLE document: the outline itself has the cover left out."""
     headings = document_headings(doc)
     patterns = _leading_patterns(headings)
     shown = headings
@@ -582,7 +587,33 @@ def document_sample(doc: CanonicalDoc) -> dict:
         "levelCounts": dict(sorted(Counter(h["level"] for h in headings).items())),
         "depthCounts": dict(sorted(Counter(h["depth"] for h in headings).items())),
         "codeCandidates": _code_candidates(doc),
+        "coverLines": list(cover or []),
     }
+
+
+MAX_COVER_LINES = 25
+
+
+def cover_lines(doc: CanonicalDoc) -> list[dict]:
+    """The lines of the cover, numbered (`j`) for the model to name the title by: the first page's blocks, or, for a file without pages, the
+    blocks before its first numbered heading. The model picks the title's lines; code joins them (validate_profile)."""
+    paged = any(b.source_ref.page for b in doc.blocks)
+    lines: list[dict] = []
+    for block in doc.blocks:
+        if paged and block.source_ref.page not in (None, 1):
+            break
+        numbered = block.kind == BlockKind.HEADING and (
+            block.number_label or parse_numbering(block.text)[0]
+        )
+        if not paged and numbered:
+            break
+        text = " ".join(block.text.split())
+        if text and block.kind in (BlockKind.HEADING, BlockKind.PARAGRAPH, BlockKind.NOTE):
+            lines.append({"j": len(lines), "text": _clip(text)})
+        if len(lines) >= MAX_COVER_LINES:
+            break
+    return lines
+
 
 
 # The code shapes shown to the model (most frequent first), with this many example codes and one example paragraph each.
@@ -675,7 +706,9 @@ def validate_front_matter(raw: dict, headings: list[dict], doc: CanonicalDoc | N
     return tuple(sorted(parts.values(), key=lambda p: p.block_id))
 
 
-def validate_document_answer(raw: dict, headings: list[dict], doc: CanonicalDoc | None = None) -> DocumentRules | str:
+def validate_document_answer(
+    raw: dict, headings: list[dict], doc: CanonicalDoc | None = None, cover: list[dict] | None = None
+) -> DocumentRules | str:
     """The model's answer as DocumentRules, or the reason it cannot be used. Labels are recounted over every heading of the document; front
     matter is checked against the document (validate_front_matter)."""
     labels: list[LabelRule] = []
@@ -723,11 +756,156 @@ def validate_document_answer(raw: dict, headings: list[dict], doc: CanonicalDoc 
         return "the types the model gave for each depth go back up the ladder"
     front_matter = validate_front_matter(raw, headings, doc)
     grammar = validate_grammar(raw, headings, doc)
+    profile = validate_profile(raw, headings, cover)
     if not labels and not depth_types and not front_matter and not any(grammar.values()):
         return "the model found no type, no front matter and no grammar the document states"
     return DocumentRules(
-        labels=tuple(labels), depth_types=tuple(depth_types), origin="model", front_matter=front_matter, **grammar
+        labels=tuple(labels), depth_types=tuple(depth_types), origin="model", front_matter=front_matter, **grammar, **profile
     )
+
+
+# A cover line that only marks the document is never its title.
+_MARKING = re.compile(
+    r"^(company |commercial )?(confidential|restricted|secret|internal|proprietary|draft|unclassified|not classified)\b",
+    re.I,
+)
+MAX_TITLE_LINE_WORDS = 15
+MAX_PROPOSALS = 10
+MAX_SPELLING_CHANGES = 2  # words changed in one heading
+MAX_SPELLING_DISTANCE = 2  # edits per changed word
+MIN_SPELLING_WORD = 4
+_STOP = frozenset("a an and the of for in on to with by or at as from its".split())
+
+
+def _edit_distance(a: str, b: str) -> int:
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", fold(text))
+
+
+def _grounded(title: str, pool: str) -> bool:
+    """Every significant word of a proposed name is in `pool` (the section's sub-headings, the cover title): the same word, or one sharing
+    its first five letters ("Environment" from "Environmental conditions")."""
+    have = set(_words(pool))
+    wanted = [w for w in _words(title) if w not in _STOP and len(w) > 1]
+    return bool(wanted) and all(
+        w in have or (len(w) >= 5 and any(h[:5] == w[:5] for h in have if len(h) >= 5))
+        for w in wanted
+    )
+
+
+def _descendants(headings: list[dict], i: int) -> list[dict]:
+    """The headings under heading `i`: those after it, deeper than it, until one at its depth or shallower."""
+    index = next((k for k, h in enumerate(headings) if h["i"] == i), None)
+    if index is None:
+        return []
+    out = []
+    for h in headings[index + 1 :]:
+        if h["depth"] <= headings[index]["depth"]:
+            break
+        out.append(h)
+    return out
+
+
+def validate_profile(raw: dict, headings: list[dict], cover: list[dict] | None) -> dict:
+    """The document profile the model named, each part checked on its own (a part that fails is dropped, never the answer):
+    * document_kind, title_policy: one of the known values;
+    * cover_title_lines: 1 to 4 adjacent cover lines, none a marking or a notice; code joins them into the cover title;
+    * proposals: a heading of the document; drop_wrapper only for a heading with sections under it; a rename only to a name grounded in its
+      sub-headings or the cover title, and different from the heading;
+    * spelling_fixes: the same words, at most MAX_SPELLING_CHANGES changed, each by at most MAX_SPELLING_DISTANCE edits."""
+    result: dict = {
+        "document_kind": None,
+        "cover_title": None,
+        "proposals": (),
+        "spelling_fixes": (),
+        "title_policy": None,
+    }
+    if raw.get("document_kind") in DOCUMENT_KINDS:
+        result["document_kind"] = raw["document_kind"]
+    if raw.get("title_policy") in TITLE_POLICIES:
+        result["title_policy"] = raw["title_policy"]
+
+    by_j = {line["j"]: line["text"] for line in cover or []}
+    picked = raw.get("cover_title_lines")
+    if (
+        isinstance(picked, list)
+        and 0 < len(picked) <= 4
+        and all(isinstance(j, int) and not isinstance(j, bool) for j in picked)
+    ):
+        js = sorted(set(picked))
+        texts = [by_j.get(j) for j in js]
+        if (
+            all(texts)
+            and all(b - a == 1 for a, b in zip(js, js[1:]))
+            and not any(_MARKING.match(t) or len(t.split()) > MAX_TITLE_LINE_WORDS for t in texts)  # type: ignore[arg-type]
+        ):
+            result["cover_title"] = " ".join(texts)  # type: ignore[arg-type]
+
+    by_i = {h["i"]: h for h in headings}
+    proposals: list[Proposal] = []
+    seen: set[str] = set()
+    for item in (raw.get("proposals") if isinstance(raw.get("proposals"), list) else [])[
+        : MAX_PROPOSALS * 2
+    ]:
+        if not isinstance(item, dict) or item.get("action") not in PROPOSAL_ACTIONS:
+            continue
+        i = item.get("i")
+        heading = by_i.get(i) if isinstance(i, int) and not isinstance(i, bool) else None
+        if heading is None or heading["block_id"] in seen:
+            continue
+        below = _descendants(headings, heading["i"])
+        reason = " ".join(str(item.get("reason") or "").split())[:300]
+        if item["action"] == "drop_wrapper":
+            if not below:
+                continue
+            proposal = Proposal(heading["block_id"], "drop_wrapper", None, reason)
+        else:
+            new_title = " ".join(str(item.get("new_title") or "").split())
+            pool = " ".join([*(h["text"] for h in below), result["cover_title"] or ""])
+            if (
+                not new_title
+                or len(new_title) > 80
+                or fold(new_title) == fold(heading["text"])
+                or not _grounded(new_title, pool)
+            ):
+                continue
+            proposal = Proposal(heading["block_id"], "rename", new_title, reason)
+        seen.add(heading["block_id"])
+        proposals.append(proposal)
+    result["proposals"] = tuple(proposals[:MAX_PROPOSALS])
+
+    fixes: list[tuple[str, str]] = []
+    for item in raw.get("spelling_fixes") if isinstance(raw.get("spelling_fixes"), list) else []:
+        i = item.get("i") if isinstance(item, dict) else None
+        heading = by_i.get(i) if isinstance(i, int) and not isinstance(i, bool) else None
+        fixed = " ".join(str(item.get("fixed") or "").split()) if heading else ""
+        if heading is None or not fixed:
+            continue
+        before, after = heading["text"].split(), fixed.split()
+        changed = [(a, b) for a, b in zip(before, after) if a != b]
+        if (
+            len(before) == len(after)
+            and 0 < len(changed) <= MAX_SPELLING_CHANGES
+            and all(
+                min(len(a), len(b)) >= MIN_SPELLING_WORD
+                and fold(a) != fold(b)
+                and _edit_distance(fold(a), fold(b)) <= MAX_SPELLING_DISTANCE
+                for a, b in changed
+            )
+        ):
+            fixes.append((heading["block_id"], fixed))
+    result["spelling_fixes"] = tuple(sorted(dict(fixes).items()))
+    return result
+
 
 
 def validate_grammar(raw: dict, headings: list[dict], doc: CanonicalDoc | None) -> dict:
@@ -861,7 +1039,52 @@ def vote_documents(rules: list[DocumentRules]) -> DocumentRules:
         for block_id, counts in sorted(front_votes.items())
         if sum(counts.values()) * 2 > total  # a majority calls it front matter; the role is the most named one
     )
-    return DocumentRules(labels=labels, depth_types=depths, origin="model", front_matter=front, **_vote_grammar(rules))
+    return DocumentRules(
+        labels=labels, depth_types=depths, origin="model", front_matter=front, **_vote_grammar(rules), **_vote_profile(rules)
+    )
+
+
+def _vote_profile(rules: list[DocumentRules]) -> dict:
+    """Each profile part by strict majority: the kind, the policy and the cover title by value (the title compared folded), each proposal by
+    its heading, action and folded new name (the shown reason is the first in sorted order, so the result does not depend on arrival order),
+    each spelling fix by heading and text. A part with no majority is no answer."""
+    total = len(rules)
+
+    def majority(values: list) -> object | None:
+        counts = Counter(v for v in values if v)
+        if not counts:
+            return None
+        value, count = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[0]
+        return value if count * 2 > total else None
+
+    titles: dict[str, list[str]] = {}
+    for r in rules:
+        if r.cover_title:
+            titles.setdefault(fold(r.cover_title), []).append(r.cover_title)
+    title_key = majority([fold(r.cover_title) if r.cover_title else None for r in rules])
+    proposal_votes: dict[tuple[str, str, str], list[Proposal]] = {}
+    for r in rules:
+        for p in r.proposals:
+            proposal_votes.setdefault((p.block_id, p.action, fold(p.new_title or "")), []).append(p)
+    proposals = tuple(
+        Proposal(
+            key[0],
+            key[1],
+            min(p.new_title for p in group) if key[1] == "rename" else None,
+            min(p.reason for p in group),
+        )  # type: ignore[type-var]
+        for key, group in sorted(proposal_votes.items())
+        if len(group) * 2 > total
+    )
+    fix_votes = Counter(f for r in rules for f in r.spelling_fixes)
+    return {
+        "document_kind": majority([r.document_kind for r in rules]),
+        "cover_title": min(titles[title_key]) if title_key else None,  # type: ignore[index]
+        "proposals": proposals,
+        "spelling_fixes": tuple(sorted(f for f, n in fix_votes.items() if n * 2 > total)),
+        "title_policy": majority([r.title_policy for r in rules]),
+    }
+
 
 
 def _vote_grammar(rules: list[DocumentRules]) -> dict:
@@ -894,22 +1117,35 @@ def _vote_grammar(rules: list[DocumentRules]) -> dict:
 
 
 def study_document_with_model(
-    doc: CanonicalDoc, client: FileRulesStudyClient, user_id: str | None = None, votes: int = 3
+    doc: CanonicalDoc,
+    client: FileRulesStudyClient,
+    user_id: str | None = None,
+    votes: int = 3,
+    cover: list[dict] | None = None,
 ) -> tuple[DocumentRules | None, str | None]:
+    """`cover` is cover_lines() of the whole document (`doc` here has its cover left out)."""
     headings = document_headings(doc)
     if len(headings) < MIN_DOCUMENT_HEADINGS:
         return None, None
-    sample = document_sample(doc)
+    sample = document_sample(doc, cover=cover)
     answers, reason = _ask(
-        lambda vote, accept: client.study_file_rules_document(sample, user_id=user_id, vote=vote, accept=accept),
-        lambda raw: validate_document_answer(raw, headings, doc),
+        lambda vote, accept: client.study_file_rules_document(
+            sample, user_id=user_id, vote=vote, accept=accept
+        ),
+        lambda raw: validate_document_answer(raw, headings, doc, cover=cover),
         votes,
         "the document",
     )
     if reason is not None:
         return None, reason
     voted = vote_documents(answers)
-    if not voted.labels and not voted.depth_types and not voted.front_matter:
+    # Each answer passed validation only by stating something (a type, front matter or a grammar); the vote keeps what a majority agrees on.
+    if (
+        not voted.labels
+        and not voted.depth_types
+        and not voted.front_matter
+        and not voted.has_grammar()
+    ):
         return None, "the model's answers disagree on what the document states"
     return voted, None
 
@@ -958,7 +1194,9 @@ def prestudy(
     else:
         # The outline the model reads leaves out the front matter the document's own structure already shows (contents entries, everything
         # before the first numbered section), so the model is asked only about what is still open.
-        document, reason = study_document_with_model(without_front_matter(doc, find_front_matter(doc)), client, user_id, votes)
+        document, reason = study_document_with_model(
+            without_front_matter(doc, find_front_matter(doc)), client, user_id, votes, cover=cover_lines(doc)
+        )
         if reason is not None:
             warnings.append(_rejected("the document", reason))
         elif document is not None:
@@ -966,6 +1204,9 @@ def prestudy(
                 [f"{r.label}{r.separator} = {r.type}" for r in document.labels]
                 + [f"depth {d + 1} = {t}" for d, t in document.depth_types]
                 + [f"{p.role.replace('_', ' ')} left out" for p in document.front_matter]
+                + ([f"cover title '{document.cover_title}'"] if document.cover_title else [])
+                + [f"{len(document.proposals)} structure proposal(s) for the user"] * bool(document.proposals)
+                + [f"{len(document.spelling_fixes)} heading spelling fix(es)"] * bool(document.spelling_fixes)
             )
             warnings.append(
                 IntegrityWarning.make(
@@ -987,7 +1228,8 @@ def _rejected(source: str, reason: str) -> IntegrityWarning:
 
 
 # Bump when the sampling, validation or voting code changes meaning, so a rulebook stored under an older version is asked for again.
-_CODE_PASS_VERSION = "5"  # 4: front matter (validate_front_matter), the outline without the code-found front matter; 5: the grammar
+# 4: front matter (validate_front_matter), the outline without the code-found front matter; 5: the grammar; 6: the document profile
+_CODE_PASS_VERSION = "6"
 
 
 def prestudy_version() -> str:
