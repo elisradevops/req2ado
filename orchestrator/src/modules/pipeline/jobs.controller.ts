@@ -1051,6 +1051,20 @@ export class JobsController {
     return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
+  // The reviewer changes an item's type within the ladder; Undo is the same call with the type it had (`retypedFrom` on the entry).
+  @Patch(':id/diff/:localId/type')
+  async changeDiffEntryType(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('type') type: unknown,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (typeof type !== 'string') throw new BadRequestException('type is required');
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.changeDiffEntryType(id, localId, type);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
   // Reviewer correction of figure placement BEFORE the write: move a figure to another entry, or detach it (targetLocalId null). The route has
   // five segments, so it cannot shadow or be shadowed by the shorter 'diff/:localId/...' PATCH routes above.
   @Patch(':id/diff/:localId/figures/:figureId')

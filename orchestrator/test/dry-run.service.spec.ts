@@ -944,6 +944,62 @@ describe('DryRunService', () => {
     expect(result[0].figureIds).toEqual(['f3']);
   });
 
+  // What the file states (tags, Requirement Type), the review marks and With AI review's suggested wording reach the entry on every action
+  // branch -- the same three-branch regression shape as figureIds above.
+  const fileRead = {
+    fileTags: ['customer-baseline', 'phase-2'],
+    requirementType: 'Performance',
+    derivedMarks: ['Should'],
+    descriptionSuggestion: 'The receiver shall scan every channel within 4 min.',
+  };
+  const fileReadNode = {
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+    sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [], ...fileRead,
+  };
+  const expectFileRead = (entry: DryRunDiffEntry) => {
+    expect(entry).toMatchObject({ fileTags: fileRead.fileTags, requirementType: 'Performance', derivedMarks: ['Should'] });
+    expect(entry.suggestion).toEqual({
+      id: 'ai-review-n0',
+      proposedTitle: null,
+      proposedDescription: fileRead.descriptionSuggestion,
+      decision: 'pending',
+      createdAt: new Date(0).toISOString(),
+      origin: 'ai_review',
+    });
+    expect(entry.description).toBe('D'); // the suggestion is offered, never applied
+  };
+
+  it('carries file tags, Requirement Type, review marks and the AI review suggestion on the "create" branch', async () => {
+    const result = await new DryRunService().diff([fileReadNode], fakeIdempotencyService);
+    expect(result[0].action).toBe('create');
+    expectFileRead(result[0]);
+  });
+
+  it('carries them on the "reuse" branch', async () => {
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(new Map([[idempotencyMapKey('h0', 'Project\\Area1'), 42]]));
+    const result = await new DryRunService().diff([fileReadNode], fakeIdempotencyService);
+    expect(result[0].action).toBe('reuse');
+    expectFileRead(result[0]);
+  });
+
+  it('carries them on the "dedup_skip" branch', async () => {
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
+    const result = await new DryRunService().diff([fileReadNode], fakeIdempotencyService, dedupCheck);
+    expect(result[0].action).toBe('dedup_skip');
+    expectFileRead(result[0]);
+  });
+
+  it('adds none of them for a node from an older ingestion result', async () => {
+    const result = await new DryRunService().diff(
+      [{ localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'A', tags: [] }],
+      fakeIdempotencyService,
+    );
+    expect(result[0]).not.toHaveProperty('fileTags');
+    expect(result[0]).not.toHaveProperty('requirementType');
+    expect(result[0]).not.toHaveProperty('derivedMarks');
+    expect(result[0]).not.toHaveProperty('suggestion');
+  });
+
   // SWEEP.md section 7's abstain channel. Same regression shape as
   // figureIds above -- diffOneNode's three return branches are each their
   // own object literal, so a field added to only some of them is silently

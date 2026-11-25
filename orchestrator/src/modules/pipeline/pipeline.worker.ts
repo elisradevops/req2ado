@@ -413,6 +413,13 @@ interface LeveledNode {
   // Optional for the same backward-compat reason as the scoring fields above.
   source_ref?: LeveledSourceRef | null;
   tags?: string[];
+  // What the file itself states (written to System.Tags and the Requirement Type field; a file-stated type wins), the review marks read
+  // from a Requirement's text (filters only, never written) and With AI review's suggested wording (offered, never applied). Optional:
+  // an older ingestion response omits them.
+  file_tags?: string[];
+  requirement_type?: string | null;
+  derived_marks?: string[];
+  description_suggestion?: string | null;
   child_type?: string | null;
   // SURVEY-only, LLM-judged relevance (see ingestion's WorkItemNode) --
   // optional for the same backward-compat reason as the scoring fields
@@ -1149,6 +1156,10 @@ export async function runPipelineJob(
             }
           : null,
         tags: node.tags ?? [],
+        fileTags: node.file_tags ?? [],
+        requirementType: node.requirement_type ?? null,
+        derivedMarks: node.derived_marks ?? [],
+        descriptionSuggestion: node.description_suggestion ?? null,
         childType: node.child_type,
         traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
         figureIds: node.figure_ids ?? [],

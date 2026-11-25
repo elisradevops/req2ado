@@ -671,6 +671,28 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
+  // A Requirement Type the file itself states, as one of the field's real allowed values (compared case/whitespace-insensitively, written
+  // in the picklist's own spelling); null when the picklist has no such value.
+  private static resolveStatedValue(stated: string, allowedValues: string[]): string | null {
+    const wanted = stated.toLowerCase().trim().replace(/\s+/g, ' ');
+    return allowedValues.find((value) => value.toLowerCase().trim().replace(/\s+/g, ' ') === wanted) ?? null;
+  }
+
+  // The tags the file states for an item, as ADO's System.Tags value: trimmed, without the separators ADO would split a tag on, without
+  // duplicates (ADO compares tags case-insensitively), joined with "; ". Empty when nothing is left.
+  static systemTagsValue(fileTags: string[]): string {
+    const seen = new Set<string>();
+    const tags: string[] = [];
+    for (const raw of fileTags) {
+      const tag = raw.replace(/[;,]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (tag && !seen.has(tag.toLowerCase())) {
+        seen.add(tag.toLowerCase());
+        tags.push(tag);
+      }
+    }
+    return tags.join('; ');
+  }
+
   private static formatSourceRef(sourceRef: {
     documentPath: string;
     startOffset: number;
@@ -2011,6 +2033,46 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * The reviewer changes an item's type within the ladder (owner decision, 2026-11-25): only to a type the item's parent allows for it
+   * (canNest; at the top only an Epic) and that allows each of its children, only for an item this job will create (a reused or skipped item is an
+   * existing work item, not this job's to retype), and never once this job has written it. The entry keeps the type it had first
+   * (`retypedFrom`), so Undo is the same call back to it, which clears the mark.
+   */
+  async changeDiffEntryType(id: string, localId: string, type: string): Promise<DryRunDiffEntry[]> {
+    if (type !== 'Epic' && type !== 'Feature' && type !== 'Requirement') {
+      throw new BadRequestException("type must be 'Epic', 'Feature' or 'Requirement'");
+    }
+    const mapping = await this.prisma.createdItemMapping.findUnique({ where: { jobId_localId: { jobId: id, localId } } });
+    if (mapping) {
+      throw new ConflictException(`Diff entry ${localId} is already written to Azure DevOps and its type cannot be changed`);
+    }
+    return this.mutateDiffVersioned(id, (diff) => {
+      const entry = diff.find((e) => e.localId === localId);
+      if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
+      if (entry.type === type) return diff;
+      if (entry.action !== 'create') {
+        throw new BadRequestException(`Diff entry ${localId} is an existing work item; only an item this job creates can change type`);
+      }
+      const parent = entry.parentLocalId ? diff.find((e) => e.localId === entry.parentLocalId) : undefined;
+      if (parent) {
+        if (!canNest(type, parent.type)) throw new BadRequestException(`a ${type} cannot be nested under a ${parent.type}`);
+      } else if (type !== 'Epic') {
+        // The owner's ladder: only Epics are roots (a move may still use canBeRoot's no-Epic fallback; a type change does not).
+        throw new BadRequestException(`a ${type} cannot be a top-level item here`);
+      }
+      const blocking = diff.filter((e) => e.parentLocalId === localId && !canNest(e.type, type));
+      if (blocking.length > 0) {
+        throw new BadRequestException(`a ${type} cannot hold the ${blocking[0].type} under it`);
+      }
+      const original = entry.retypedFrom ?? entry.type;
+      entry.type = type;
+      if (type === original) delete entry.retypedFrom;
+      else entry.retypedFrom = original;
+      return diff;
+    });
+  }
+
   async getSummary(id: string): Promise<{
     created: number;
     reused: number;
@@ -2728,6 +2790,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // (addDiffEntry) and older-shaped fixtures may omit either entirely.
       sourceRef?: { documentPath: string; startOffset: number; endOffset: number; page: number | null } | null;
       tags?: string[];
+      // What the file states (see DryRunDiffEntry): written to System.Tags and the Requirement Type field. Absent on older diffs.
+      fileTags?: string[];
+      requirementType?: string | null;
       excluded?: boolean;
       traceLinks?: {
         sourceLocalId: string;
@@ -2936,7 +3001,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // round-trip. BASELINE jobs never carry tags at all (tree_builder.py
         // never assigns them), so this is a no-op there without needing a
         // separate mode check.
-        if (entry.type === 'Requirement' && (entry.tags?.length ?? 0) > 0 && !requirementTypeFieldByType.has(entry.type)) {
+        if (entry.type === 'Requirement' && ((entry.tags?.length ?? 0) > 0 || entry.requirementType) && !requirementTypeFieldByType.has(entry.type)) {
           requirementTypeFieldByType.set(entry.type, await this.resolveRequirementTypeField(fieldsByType, realType(entry.type), project, credential));
         }
       }
@@ -3058,10 +3123,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // at whatever ADO's own default already is (confirmed: this org's
         // process-template default, not something this code invents) and
         // the Requirement is queued for the one combined warning below.
-        if (entry.type === 'Requirement' && (entry.tags?.length ?? 0) > 0) {
+        // A Requirement Type the file itself states wins over the model's classification (owner decision, 2026-11-25); a stated value the
+        // picklist does not have is not written and is warned about the same way.
+        if (entry.type === 'Requirement' && (entry.requirementType || (entry.tags?.length ?? 0) > 0)) {
           const requirementTypeField = requirementTypeFieldByType.get(entry.type);
           if (requirementTypeField != null) {
-            const value = JobsService.resolveClassificationValue(entry.tags ?? [], requirementTypeField.allowedValues);
+            const value = entry.requirementType
+              ? JobsService.resolveStatedValue(entry.requirementType, requirementTypeField.allowedValues)
+              : JobsService.resolveClassificationValue(entry.tags ?? [], requirementTypeField.allowedValues);
             if (value !== null) {
               fields[requirementTypeField.referenceName] = value;
             } else {
@@ -3069,6 +3138,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             }
           }
         }
+        // The tags the file itself states (an ADO-export Tags column) go to System.Tags, which every work-item type has. Nothing derived is
+        // ever written there: the review marks (TBD, Should, ...) stay in the app, and the classification goes to its own field above.
+        const systemTags = JobsService.systemTagsValue(entry.fileTags ?? []);
+        if (systemTags) fields['System.Tags'] = systemTags;
         let created: { id: number };
         try {
           created = await this.mcpClient.createWorkItem(realType(entry.type), fields, project, credential);
