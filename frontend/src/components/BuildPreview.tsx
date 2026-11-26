@@ -1,12 +1,25 @@
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { SectionCard } from '../ui/SectionCard';
 import type { FileReading, ProposalDecision } from '../api/jobs';
+import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { applyDecisions } from '../utils/buildPreview';
 
 // The new-job page's "What it will build" (the approved mockup, 2026-11-25): the Epics and Features the job will build, with their
 // requirement counts, with the study's proposals applied unless the user undid them (owner rule R4, 2026-11-26). The one place the tree is previewed ("About this file" has no copy).
 
-export function BuildPreview({ reading, decisions }: { reading: FileReading; decisions: Record<string, ProposalDecision | undefined> }): React.ReactElement {
+// With the project's type catalog (picked on this page), each row draws Azure DevOps's own icon for its type, as the review tree does
+// (owner finding, 2026-11-26); before a project is picked, the built-in icons.
+export function BuildPreview({
+  reading,
+  decisions,
+  typeCatalog,
+  categoryLabels,
+}: {
+  reading: FileReading;
+  decisions: Record<string, ProposalDecision | undefined>;
+  typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
+  categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
+}): React.ReactElement {
   const { rows, removed } = applyDecisions(reading.outline, reading.decisions, decisions);
   const epics = rows.filter((r) => r.type === 'Epic').length;
   const features = rows.filter((r) => r.type === 'Feature').length;
@@ -16,7 +29,7 @@ export function BuildPreview({ reading, decisions }: { reading: FileReading; dec
         <ul className="relative flex max-h-[340px] flex-col gap-0.5 overflow-y-auto" aria-label="Epics and Features">
           {rows.map((row) => (
             <li key={row.id} className="flex min-h-6 items-center gap-1.5 text-sm" style={{ paddingLeft: `${row.depth * 14}px` }}>
-              <WorkItemTypeBadge type={row.type} iconOnly />
+              <WorkItemTypeBadge type={row.type} catalogEntry={typeCatalog?.[categoryLabels?.[row.type] ?? row.type]} iconOnly />
               <span dir="auto" className={`min-w-0 truncate ${row.was ? 'font-semibold text-accent-ink' : ''}`} title={row.was ? `Renamed from ${row.was}` : undefined}>
                 {row.title}
               </span>

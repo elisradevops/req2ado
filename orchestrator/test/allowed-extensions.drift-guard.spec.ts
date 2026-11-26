@@ -40,3 +40,16 @@ describe('ALLOWED_EXTENSIONS drift guard', () => {
     expect(missing).toEqual([]);
   });
 });
+
+describe('KB_SUPPORTED_EXTENSIONS drift guard', () => {
+  it('equals ingestion dispatch.py\'s full _SUPPORTED_EXTENSIONS, images included: a file the KB page calls "Not supported" is one ingestion cannot read', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { KB_SUPPORTED_EXTENSIONS } = require('../src/modules/kb/kb-file-types');
+    const dispatchSource = readFileSync(DISPATCH_PATH, 'utf-8');
+    const fullIngestionSet = new Set([
+      ...parsePythonExtensionSet(dispatchSource, '_SUPPORTED_EXTENSIONS'),
+      ...parsePythonExtensionSet(dispatchSource, '_IMAGE_EXTENSIONS'),
+    ]);
+    expect([...KB_SUPPORTED_EXTENSIONS].sort()).toEqual([...fullIngestionSet].sort());
+  });
+});

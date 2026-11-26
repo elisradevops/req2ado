@@ -29,6 +29,8 @@ beforeEach(() => {
   useNewJobDraftStore.getState().reset();
   vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+  // By default the project's type catalog is empty, so "What it will build" keeps its built-in icons.
+  vi.spyOn(adoApi, 'getWorkItemTypes').mockResolvedValue({ catalog: {}, labels: { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' } });
   // By default the job reads no Study (as for a user with no model connection), so Start behaves as it did before the Study step.
   vi.spyOn(jobsApi, 'previewStudy').mockResolvedValue({ kind: 'skipped' });
   // By default the file study answers with rules but no reading (as for a spreadsheet, or a rulebook stored before readings were kept), so a

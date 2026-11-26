@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getWorkItemTypes } from '../api/ado';
 import { Link, useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
@@ -433,6 +434,26 @@ export function NewJobWizard(): React.ReactElement {
     };
   }, [parsedFileName]);
   const [project, setProject] = useState(initial.project);
+  // The picked project's work-item types as Azure DevOps draws them, so "What it will build" shows the same icons the review tree does
+  // (owner finding, 2026-11-26). Read again when the project changes; a stale answer is dropped; a failed read keeps the built-in icons.
+  const [typeIcons, setTypeIcons] = useState<Awaited<ReturnType<typeof getWorkItemTypes>> | null>(null);
+  useEffect(() => {
+    if (!project) {
+      setTypeIcons(null);
+      return;
+    }
+    let cancelled = false;
+    getWorkItemTypes(project)
+      .then((answer) => {
+        if (!cancelled) setTypeIcons(answer);
+      })
+      .catch(() => {
+        if (!cancelled) setTypeIcons(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project]);
   const [areaPath, setAreaPath] = useState(initial.areaPath);
   const [state, setState] = useState(initial.state);
   const [iterationPath, setIterationPath] = useState(initial.iterationPath);
@@ -1240,7 +1261,9 @@ export function NewJobWizard(): React.ReactElement {
               )}
             </div>
           </SectionCard>
-          {finalStep && reading && <BuildPreview reading={reading} decisions={decisions} />}
+          {finalStep && reading && (
+            <BuildPreview reading={reading} decisions={decisions} typeCatalog={typeIcons?.catalog} categoryLabels={typeIcons?.labels} />
+          )}
         </aside>
       </div>
       {forecast && (

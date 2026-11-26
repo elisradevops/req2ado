@@ -27,6 +27,9 @@ export interface IngestedDocument {
   chunkCount?: number | null;
   // The SharePoint library the file came from; null/absent = added before it was recorded.
   driveId?: string | null;
+  // current / legacy (added before its library was recorded: the folder tree cannot find it) / unsupported (a type req2ado does not read).
+  // Absent from an older server, read as current.
+  status?: 'current' | 'legacy' | 'unsupported';
 }
 
 export interface FolderIngestFile {

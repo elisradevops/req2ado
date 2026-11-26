@@ -746,7 +746,16 @@ export function KnowledgeBase(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Knowledge base" description="Your reference documents. With AI review jobs you start use them for context. Other users do not see them." />
-      <KbIngestedList refreshKey={kbListVersion} />
+      <KbIngestedList
+        refreshKey={kbListVersion}
+        onRemoved={({ removed, failed }) => {
+          if (removed > 0) showToast(removed === 1 ? 'Removed 1 file from the knowledge base.' : `Removed ${removed} files from the knowledge base.`, 'success');
+          if (failed.length > 0) showToast(`Could not remove ${failed.length === 1 ? `"${failed[0]}"` : `${failed.length} files`}. Try again in a moment.`, 'error');
+          // The folder tree marks what is in the knowledge base: read the open folder again so a removed file no longer shows as added.
+          setIngestOverrides({});
+          void reloadKeepingFolder();
+        }}
+      />
       <KbSourceBar
         sourceUrl={sourceUrl}
         draftUrl={browseUrl}

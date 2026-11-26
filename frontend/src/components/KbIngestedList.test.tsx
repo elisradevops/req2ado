@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import * as kbApi from '../api/kb';
 import { KbIngestedList } from './KbIngestedList';
@@ -76,3 +76,68 @@ describe('KbIngestedList', () => {
   });
 });
 
+
+// Owner finding (2026-11-26): files the folder tree cannot reach (legacy, or of a type req2ado does not read) stayed in the knowledge base
+// and kept grounding scoring. Every file can be removed from this list, and those two kinds are labelled and can be removed together.
+describe('KbIngestedList: removing files from the list', () => {
+  const docs = [
+    doc({ id: 'a', name: 'Current.pdf', status: 'current' }),
+    doc({ id: 'b', name: 'Old spec.docx', status: 'legacy' }),
+    doc({ id: 'c', name: 'Bundle.zip', status: 'unsupported' }),
+    doc({ id: 'd', name: 'Drawing.vsdx', status: 'unsupported' }),
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(kbApi.listIngestedDocuments).mockResolvedValue(docs);
+    vi.mocked(kbApi.deleteIngestedDocument).mockResolvedValue(undefined);
+  });
+
+  it('labels legacy and unsupported files, and says why', async () => {
+    render(<KbIngestedList />);
+    const items = within(await screen.findByRole('list', { name: /in your knowledge base/i })).getAllByRole('listitem');
+    expect(items[0]).not.toHaveTextContent(/legacy|not supported/i);
+    expect(within(items[1]).getByText('Legacy')).toHaveAttribute('title', expect.stringMatching(/folder tree/i));
+    expect(within(items[2]).getByText('Not supported')).toHaveAttribute('title', expect.stringMatching(/does not read/i));
+  });
+
+  it('removes one file after confirming, and reports it', async () => {
+    const onRemoved = vi.fn();
+    render(<KbIngestedList onRemoved={onRemoved} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Old spec.docx from your knowledge base' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Old spec.docx');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove document' }));
+    await waitFor(() => expect(kbApi.deleteIngestedDocument).toHaveBeenCalledWith('b'));
+    await waitFor(() => expect(onRemoved).toHaveBeenCalledWith({ removed: 1, failed: [] }));
+  });
+
+  it('filters to the unsupported files and removes all of them after one confirmation', async () => {
+    const onRemoved = vi.fn();
+    render(<KbIngestedList onRemoved={onRemoved} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Not supported · 2' }));
+    const list = screen.getByRole('list', { name: /in your knowledge base/i });
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Bundle.zip'),
+      expect.stringContaining('Drawing.vsdx'),
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove all 2' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(/2 files/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove 2 files' }));
+    await waitFor(() => expect(onRemoved).toHaveBeenCalledWith({ removed: 2, failed: [] }));
+    expect(vi.mocked(kbApi.deleteIngestedDocument).mock.calls.map((c) => c[0])).toEqual(['c', 'd']);
+  });
+
+  it('reports a file that could not be removed, and keeps going with the rest', async () => {
+    vi.mocked(kbApi.deleteIngestedDocument).mockImplementation(async (id) => {
+      if (id === 'c') throw new Error('boom');
+    });
+    const onRemoved = vi.fn();
+    render(<KbIngestedList onRemoved={onRemoved} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Not supported · 2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove all 2' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove 2 files' }));
+    await waitFor(() => expect(onRemoved).toHaveBeenCalledWith({ removed: 1, failed: ['Bundle.zip'] }));
+  });
+});

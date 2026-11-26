@@ -159,3 +159,34 @@ describe('AdoController.getProjects', () => {
     expect(result).toEqual([{ id: '1', name: 'Project' }]);
   });
 });
+
+// Owner finding (2026-11-26): the new-job tree must show the project's real Azure DevOps type icons, as the review tree does.
+describe('AdoController work-item types', () => {
+  const catalogService = {
+    resolve: jest.fn().mockResolvedValue({ Epic: { color: 'FF7B00', iconDataUrl: 'data:image/svg+xml;base64,AAA' } }),
+    resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' }),
+  };
+
+  it('answers the project type catalog and category labels, read with the user own credential', async () => {
+    const credential = { orgUrl: 'https://dev.azure.com/x', pat: 'p' };
+    const resolver = { resolve: jest.fn().mockResolvedValue(credential) };
+    const controller = new AdoController({} as any, resolver as any, catalogService as any);
+    const result = await controller.getWorkItemTypes({ userId: 'u1', displayName: 'U' }, 'Vireo');
+    expect(resolver.resolve).toHaveBeenCalledWith('u1');
+    expect(catalogService.resolve).toHaveBeenCalledWith('Vireo', credential);
+    expect(result).toEqual({
+      catalog: { Epic: { color: 'FF7B00', iconDataUrl: 'data:image/svg+xml;base64,AAA' } },
+      labels: { Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' },
+    });
+  });
+
+  it('fails open to an empty catalog: no project, no credential, or a failed read never breaks the new-job page', async () => {
+    const empty = { catalog: {}, labels: { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' } };
+    const none = new AdoController({} as any, { resolve: jest.fn().mockResolvedValue(null) } as any, catalogService as any);
+    expect(await none.getWorkItemTypes({ userId: 'u1', displayName: 'U' }, 'Vireo')).toEqual(empty);
+    expect(await none.getWorkItemTypes({ userId: 'u1', displayName: 'U' }, undefined)).toEqual(empty);
+    const failing = { resolve: jest.fn().mockRejectedValue(new Error('boom')), resolveCategoryLabels: jest.fn().mockRejectedValue(new Error('boom')) };
+    const broken = new AdoController({} as any, { resolve: jest.fn().mockResolvedValue({ orgUrl: 'o', pat: 'p' }) } as any, failing as any);
+    expect(await broken.getWorkItemTypes({ userId: 'u1', displayName: 'U' }, 'Vireo')).toEqual(empty);
+  });
+});
