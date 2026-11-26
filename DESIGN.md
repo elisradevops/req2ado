@@ -1345,7 +1345,7 @@ never blocks. A file with no headings says what the leveler really does: clause 
 with none is everything one Epic and one Feature (`leveling/tree_builder.py`, the grouping-without-headings rule).
 
 **The rail does not claim a destination the form has not got.** With only a project chosen, "Lands" says "Not chosen yet". Below `lg` the rail
-comes after the Start action bar (SURVEY step 3, BASELINE step 2), so the bar carries a "Lands in <destination>" line itself.
+comes after the Start action bar (step 2 in both modes since §11.2.6), so the bar carries a "Lands in <destination>" line itself.
 
 **Step 3 keeps the "This run" rail (owner decision, 2026-11-12; built 2026-11-13).** Same two columns as §11.2.5: the question and Start on the
 left, the file, mode and destination (`RunFacts`, shared with step 2) and the estimate on the right. A new job starts from the last started
@@ -1369,6 +1369,9 @@ its own question heading:
 1. **"How should it read the document?"** — the hero.
 2. **"Where do the items land?"** — an ADO path, read left to right.
 3. The cost, as a calibrated range.
+
+**Superseded 2026-11-25 by §11.2.6:** step 2 is one page in both modes, there is no step 3 and no "Stop waiting". The paragraph below still
+describes the file-check card shown when no reading of the file is available (a spreadsheet, or a study that failed).
 
 **The step count follows the mode (P5, 2026-11-20).** BASELINE has two steps, "Upload document" and "Check and start"; SURVEY
 has three, "Upload document", "Configure & review" and "Confirm understanding" (it waits there for the optional AI summary). The
@@ -1440,6 +1443,13 @@ was. Cleared on a started job or batch, a replaced file and logout; a reload
 starts fresh (a `File` cannot be stored). A parse that was still running when the
 user left is dropped, a restored model that is no longer offered falls back to
 Default, and a restored project keeps its restored area path.
+
+**Amended 2026-11-25 (§11.2.6).** The cards are named **Standard** and **With AI review** and sit side by side from `md`, compact:
+radio, name, time range, one line. The live output preview is removed: both modes now build the same tree, so there is no shape
+difference left to show. The model-cost chip is removed: "No model cost" became false when Standard started using a model to read the
+file and write titles. In the row under the cards, "Both modes use AI to read the file." sits under Standard, and the `Model` picker
+sits under With AI review, shown only in that mode. Everything else above (the picker's list, its one factual line, no quality claim,
+"Last used", the draft) is unchanged.
 
 #### §11.2.2 — Destination as a breadcrumb, not a field stack
 
@@ -1938,6 +1948,10 @@ This is the same reasoning as the previous revision and it is unaffected by the
 change in method: the server returns the flat value for `mode=baseline` and
 skips the aggregate entirely.
 
+**Amended 2026-11-25.** Standard now uses a model twice: the file study on the new-job page (before Start, so not in the job's time) and
+one batched pass that writes short requirement titles. It still makes no vision call and has no per-figure cost, so the flat minute
+stands; "runs no model" no longer does, and is not said in product copy.
+
 **Permitted (presentation):**
 
 - Render a **range** rather than a single figure, from the server's
@@ -2143,6 +2157,43 @@ placeholders, never a realistic clause, section number, unit or score (`1.1 The 
 BASELINE; a `<short title>`, `The system shall <the requirement, rewritten as a clear "shall" statement>.` and `from §<section>` for SURVEY),
 because a realistic-looking sample is read as real output. §11.2.5's rule that an example stays is kept; only its content changes.
 (3) The sticky Start bar is styled as the Write bar's dock (§11.6: `z-10`, full border, `shadow-dock`) so content does not show through it.
+
+**Revised 2026-11-25 (§11.2.6).** The mode cards sit side by side (the example that needed the width is gone, §11.2.1). The document
+strip moves out of the rail to under the page title. The rail holds "This run" (mode, where it lands, the time) and "What it will build".
+
+#### §11.2.6 — One page: what was read, the decisions, and what it will build (built 2026-11-25)
+
+**Why.** Both modes now study the file with a model before the job starts (the owner's decision of 2026-11-25), and the study proposes
+structure changes the user must decide. A second step for one mode, and a way to skip the study, no longer fit.
+
+**Files:** `pages/NewJobWizard.tsx`, `components/FileStudyPanel.tsx`, `components/AboutFilePanel.tsx`, `components/BuildPreview.tsx`,
+`utils/buildPreview.ts`, `components/ModeCards.tsx`, `ui/Dialog.tsx` (`placement="right"`). The reading comes from the pre-study response's
+`details.reading` (ingestion `app/study/reading.py`).
+
+**Order, one page in both modes:** page title → a thin file strip (icon, name, `font-mono` counts, ghost "Change document") → "What was read
+from the file" → "How should it read the document?" → "Where do the items land?" → "More options" → the sticky Start bar. Section headings
+sit on the page, not in cards; the decision list and the mode cards are the only bordered items (§16.15).
+
+- **While the study runs** the section is "Studying the file": one sentence and the three things it does, in a `role="status"` region, with the
+  elapsed time outside it ("1:05 so far · Start waits for it"). The list says what happens; it does not tick off steps, because the server
+  reports none and a tick would be a guess. Start is disabled with "Start waits for: …" beside it. Mode and destination stay editable.
+- **No "Stop waiting".** The study is required: the tree is built by what it learned.
+- **No model, no start.** When the study was skipped for want of a model, Start is disabled and the bar says "An AI model is needed to read
+  the file, in both modes. Connect a model, then read the file again.", with "Read the file again".
+- **When it is read:** a check mark, "Read as <kind>", and one `tabular-nums` line of counts (`121 requirements · 120 with IDs · 10 Epics ·
+  25 Features`); a ghost "About this file" button. Then the decisions, if any: a header "N decisions · M open" with "Undecided ones keep the
+  file's original.", and one row per proposal ("Rename “General” to “Power”", "Remove the level “Requirements”") with a "Why?" that opens the
+  reason in place and an Accept / Keep pair (`aria-pressed`). A decision never applies itself. Changed decisions are saved with the rulebook
+  on Start.
+- **"About this file"** is a dialog sliding in from the right (full screen on a phone) holding all the detail: how it was read (kind, cover,
+  the context kept as the top Epic's description), requirements and IDs (the code shape, that the code becomes the Customer ID), examples
+  with "↳ under …", what was left out with page ranges, and what was fixed automatically. It has no tree.
+- **The rail** (`lg` and up, sticky): "This run" (mode, where it lands, the time), then "What it will build": the Epics and Features with
+  their requirement counts, recomputed as decisions change (an accepted rename in `accent-ink`, a removed level gone with its children moved
+  up, an open decision marked "?"), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
+  box: rows keep `min-h`). Hidden while the study runs.
+- **The Start bar:** Back, the §0 safety line, and "Looks right — start job" (primary, `Activity` glyph, never `signal`). A large With AI
+  review run still asks first (§11.1b).
 
 ### §11.3 — The running-job screen
 
@@ -2581,7 +2632,7 @@ with the `Lock` glyph, the same look as the wizard's (`components/SafetyLine.tsx
 wordings are one shared constant with the §0 wording of the wizard footer.
 
 **The phase rail.** One row per phase of the job's mode: SURVEY `parse`, `analyze`, `score`, `dedupCheck`,
-`review`, `write`; BASELINE `parse`, `dedupCheck`, `review`, `write` (BASELINE runs no model, §11.3). Paint is
+`review`, `write`; BASELINE `parse`, `dedupCheck`, `review`, `write` (no analyze or score phase; its title pass runs inside parse, §11.2.3). Paint is
 the six `StepState`s of §7, reused from `JobLifecycleSteps` (`reachedKeyFor`, `statesFor`, including the
 whole-tree passes mapping to Score and a rejected job painting Write `skipped`). Each row carries one
 state-dependent line, in plain language:
@@ -2728,6 +2779,9 @@ root regrouping) are worth little, so the bar moves while the slow work runs; th
 
 #### §11.3.6 — The write gate is a hard block (built 2026-11-13)
 
+**Amended 2026-11-25 (§11.3.7):** while blocked the bar shows a primary **Fix N items** button in place of the soft-disabled Write; it
+goes to the first blocker as described here. Everything else in this section is unchanged.
+
 **Rule (owner decision, 2026-11-12).** While any **Fix before writing** kind is open, Write is not available. It stays
 visible, `softDisabled` (§7), with the reason in text beside it in the write bar (§5; "N items to fix before writing", linked to
 the button by `aria-describedby`), and pressing it takes the reviewer to the first blocker, in the same narrowed tree "Fix in tree" gives. The
@@ -2769,6 +2823,21 @@ it. The server stores the failure class and message (`failureClass`, `failureMes
 not be read). Anything else says "The run stopped with an error." and shows the raw text: a guess would send the reader the wrong way. The summaries say "a step" or "a request", never "the model": the failing call may be Azure DevOps or SharePoint. A bare number is not a status code ("item 403"). A
 durable `job_failed` event, when there is one, still takes precedence. Reading the cause changes nothing else on screen (the card's
 "View audit" button and the audit list are untouched). Not built: showing the failed stage, "what was kept", and a Retry that resumes from a chunk (not known to be possible).
+
+#### §11.3.7 — The review after the file study: write checkbox, quiet marks, Fix then Write (built 2026-11-25)
+
+**Files:** `components/DiffTree.tsx`, `components/WriteBar.tsx`, `pages/JobDetail.tsx`.
+
+- **The row checkbox means "will be written".** Every row starts checked; unchecking leaves the item and its subtree out (the same exclude
+  endpoint as before). A row under a left-out parent shows unchecked and disabled, its label "Write <title> (its parent is left out)".
+  The accessible name is "Write <title>", never "Exclude".
+- **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code, never written to Azure DevOps and
+  never called tags) show after the title in `text-xs text-ink-3`, no chip, no tint. Colour stays for a row that blocks the write.
+- **Filter chips for the marks.** Above the tree, one chip per mark present ("TBD · 3"), pressed to narrow the tree; they combine with the
+  other filters (an intersection), and with none pressed they do not filter.
+- **The Write bar names its next step.** While blocked: a primary **Fix N items** button that goes to the first blocker (§11.3.6). When clear:
+  the `cta` **Write N items**, or **Write N of M items** when some are left out, named "… to Azure DevOps" for assistive tech. Signal yellow
+  stays on that button alone (§16.7).
 
 ### §11.4 — The work-item detail dialog
 
@@ -3407,6 +3476,18 @@ Issues: one line each, absent when clean ─────────────
   score or on grounding is Requirement-only everywhere (the tree, the queue, the dialog and the server's summary share one rule).
 - Category names are shown in words ("Capability clarity"), never as the stored key.
 
+**Additions, 2026-11-25** (`NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `ProposalReview.tsx`):
+
+- **Type** is a menu (`TypeControl`) listing only the types allowed where the item sits (a top-level item is an Epic; otherwise what its
+  parent allows and what allows its children), with Undo, for an item this job creates and has not written
+  (`PATCH /jobs/:id/diff/:localId/type`).
+- **A suggestion says who made it.** One from With AI review (an Epic or Feature summary, or a weak requirement's rewording) is reviewed
+  with the §11.4.6 flow and says "Suggested by With AI review while the job ran."; the assistant's own suggestions say nothing extra.
+  Neither is ever applied without Accept.
+- **What the file states**, a plain `dl` after Classification: Requirement type (a Requirement only; "Not stated in the file" when absent),
+  "Tags from the file" (written to Azure DevOps) and "Marked in the text" with "(for filtering, not written)". Absent when there is
+  nothing to say.
+
 #### §11.4.6 — Reviewing an assistant's suggestion next to the original (2026-11-20)
 
 A suggested rewrite used to appear only as a small card in the 380 px chat drawer: the suggested title and text, one line "Predicted score: 45 → 78",
@@ -3995,6 +4076,11 @@ the link never lands in proxy or access logs; the server takes the user from the
   low ("Quality 42 of 100. Weakest: testability (35)."); Edited since scored; Not scored yet; Wording far from the source (Requirements only).
   **Never shown:** "verdict", "grounding", a raw category key, a score or a "Check:" line on an Epic or Feature.
 - Sentence case everywhere except mode enum names and identifiers (§4).
+- **Mode names (2026-11-25).** The modes are **Standard** and **With AI review** in all user copy; BASELINE and SURVEY are code and API
+  names only. Both modes use AI to read the file: never say a mode runs no model or has no model cost. Every AI wording change is a
+  suggestion, and copy never says one was applied by itself.
+- **Marks are not tags.** TBD, Should, Will and No obligation are "marked in the text"; "tags" means only the file's own tags, which
+  are written.
 - **Glossary.** Say "Azure DevOps" and "work item", never "ADO" or "WI" in prose
   (`WI-12345` as an identifier is fine). The write is **Write to Azure DevOps**;
   "Confirm" is retired (an item that needs attention is "Fix before writing").
@@ -4429,3 +4515,7 @@ code, then moving its row up into §18.
 | Item dialog: permanent chat column, shortcut hint bar, `EvidenceStrip` with a verdict, `Scope` card for parents, generic "I have read" assistant opening | issues list, `SourcePane`, assistant drawer (§11.4.5) | `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `EvidenceStrip.tsx` (renamed `SourcePane.tsx`), `ChatPanel.tsx`, `ProposalCard.tsx`. |
 | Review screen: warnings card always open, vertical rail after the run, floating Write bar, red "Nested Epic" | folded warnings, horizontal strip, flex column, quiet chip (§11.3.5) | `CollapsibleWarnings.tsx`, `jobDetailLayout.ts`, `WriteBar.tsx`, `DiffTree.tsx`, `JobDetail.tsx`. |
 | The assistant's proposal card in the chat drawer (suggested text only, one "Predicted score" line) | review mode in the dialog body, beside the Source (§11.4.6) | `components/ChatPanel.tsx` (summary only), new `components/ProposalReview.tsx` and `hooks/useProposalReview.ts`, `components/NodeDetailDialog.tsx`. |
+| New job: two or three steps by mode, "Stop waiting", stacked mode cards with an output preview and a "No model cost" chip | one page in both modes with the file study, decisions, "About this file" and "What it will build" (§11.2.6); compact side-by-side cards named Standard / With AI review (§11.2.1) | `pages/NewJobWizard.tsx`, new `components/FileStudyPanel.tsx`, `AboutFilePanel.tsx`, `BuildPreview.tsx`, `utils/buildPreview.ts`, `components/ModeCards.tsx`, `ModeBadge.tsx`, `ui/Dialog.tsx`. Built 2026-11-25. Tests: `NewJobWizard.test.tsx`, `FileStudyPanel.test.tsx`, `buildPreview.test.ts`, `ModeCards.test.tsx`. |
+| Review: "Exclude" checkbox, marks as chips, a soft-disabled Write while blocked, no type change | write checkbox, quiet marks with filter chips, Fix N items then Write N items (§11.3.7); Type menu, suggestion origin, what the file states (§11.4.5) | `components/DiffTree.tsx`, `WriteBar.tsx`, `pages/JobDetail.tsx`, `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `ProposalReview.tsx`, new `TypeControl` test; server `PATCH /jobs/:id/diff/:localId/type`. Built 2026-11-25. Tests: `DiffTree.test.tsx`, `DiffTree.focus.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `TypeControl.test.tsx`, `ProposalReview.test.tsx`, `NodeDetailPanel.test.tsx`, `jobs.service.spec.ts`. |
+| BASELINE / SURVEY in user copy | Standard / With AI review (§12) | `utils/labels.ts`, `utils/warningKinds.ts`, `components/ProgressBanner.tsx`, `BulkApproveDialog.tsx`, `KbAddDialog.tsx`, `KbAddBatchDialog.tsx`, `KbFileDetailPane.tsx`, `KbUnlistedContentDialog.tsx`, `pages/KnowledgeBase.tsx`, `BatchJobWizard.tsx`, `NewJobWizard.tsx`. 2026-11-25. |
+| **Not built yet** from the approved mockup (2026-11-25) | review toolbar chips "Suggestion · n" and "Left out · n"; row words "Spelling fixed" and "Accepted without ID"; in the dialog, an Epic/Feature's "Its decision" (Accept/Keep until the write), "Under it" with live counts, and "Empty. The file has no text of its own…" for an empty description; "About this file" from the job header; a phone-width (390 px) walk of the new-job page and the review | `pages/JobDetail.tsx`, `components/DiffTree.tsx`, `NodeDetailPanel.tsx`, `AboutFilePanel.tsx`. The decisions need the rulebook's proposals on the job (they are on the pre-study response today). Dead code left behind: the "Stop waiting" handlers in `NewJobWizard.tsx`, `FileReadingCard.tsx` and `FileRulesCard.tsx` are no longer reachable from the page. |
