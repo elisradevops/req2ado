@@ -3,6 +3,7 @@ import type { DryRunDiffEntry } from './DiffTree';
 import { Button } from '../ui/Button';
 import type { ReadingDecision } from '../api/jobs';
 import { isExcludedWithAncestors } from '../utils/reviewQueue';
+import { isApplied } from '../utils/buildPreview';
 
 // An Epic's or Feature's own sections in the item dialog (the approved mockup, 2026-11-25): "Its decision" (what the new-job page proposed for
 // the heading it was built from) and "Under it" (the items directly under it, with what will be written).
@@ -28,7 +29,7 @@ interface DecisionProps {
  */
 export function ItsDecision({ entry, decision, editable, onRename }: DecisionProps): React.ReactElement {
   const rename = decision.action === 'rename' && decision.newTitle;
-  const accepted = rename ? entry.title === decision.newTitle : decision.decision === 'accept';
+  const accepted = rename ? entry.title === decision.newTitle : isApplied(decision.decision);
   return (
     <section className="flex flex-col gap-1.5" aria-labelledby={`decision-${entry.localId}`} data-testid="its-decision">
       <h3 id={`decision-${entry.localId}`} className="text-xs font-semibold text-ink-1">

@@ -10,8 +10,8 @@ Descriptions (owner decisions, 2026-11-25): a Requirement's is its text verbatim
 Note printed after it included), then a blank line and the trace. An Epic's or Feature's is only the file's own text for it (the
 context sections for the top Epic); with none it is empty, never the title repeated, never counts, never where it came from. `derived_marks` (TBD, Should, Will, No
 obligation) are found in the text for review filters only and are never written; `file_tags` and `requirement_type` are what the file
-states (this file states neither). Proposals (rename / drop_wrapper) are not applied: the target is the file's original until the user
-accepts one; `spelling` fixes are applied."""
+states (this file states neither). Proposals (rename / drop_wrapper) apply by default (owner rule R4, 2026-11-26): the target holds the
+proposed names and no removed level, its children moved up; the user may undo each before Start. `spelling` fixes are applied."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import build_tv_twin_pdf as tv_twin  # noqa: E402
 
-# heading -> (decision, title or None, reason). Decisions: keep, spelling (automatic), rename / drop_wrapper (proposals: user decides).
+# heading -> (decision, title or None, reason). Decisions: keep, spelling (automatic), rename / drop_wrapper (proposals: applied, undoable).
 DECISIONS = {
     "2 REQUIREMENTS": (
         "rename",
@@ -238,6 +238,9 @@ for s in sections:
         continue
     parent_num = s.number.rsplit(".", 1)[0] if "." in s.number else None
     decision, title, reason = DECISIONS.get(heading, ("keep", None, ""))
+    if decision == "drop_wrapper":  # the level is removed: its children move up to its parent
+        ids[s.number] = ids[parent_num]
+        continue
     item_type = "Epic" if not holds[s.number] else "Feature"
     n += 1
     sid = f"S{n}"
@@ -250,7 +253,7 @@ for s in sections:
         {
             "id": sid,
             "type": item_type,
-            "title": title if decision == "spelling" else original,
+            "title": title if decision in ("spelling", "rename") else original,
             "original_title": original,
             "proposed_title": title if decision == "rename" else None,
             "customer_id": None,

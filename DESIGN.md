@@ -932,7 +932,7 @@ Five named roles. Every animation in the app is exactly one of them. A new
 | **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (indeterminate progress), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity` | **Whenever nothing is actually in flight** — an outliving spinner is a correctness bug. On a loading placeholder (the skeleton is static since 2026-11-13). On reading prose. No ambient decoration: no idle pulsing, no breathing outside Attention. |
 | **Attention** | The app is blocked on an irreversible human decision | `--duration-breathe` (2600ms), once, settling on the attention state | `--ease-in-out` | `box-shadow` only — `--shadow-cta` ↔ `--shadow-cta-attention` | Everywhere except the confirm-to-ADO CTA post-acknowledgement. Never more than one element at a time. Never on reversible-destructive actions (delete, cancel). Never on a toast. |
 
-Existing keyframes, mapped: `fadeIn` / `dialogIn` / `popIn` →
+Existing keyframes, mapped: `fadeIn` / `dialogIn` / `popIn` / `fanDeal` →
 Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `spin` /
 `typedot` / `indeterminate-progress` → Ambient. `ctaBreathe` →
 Attention. `animate-pulse` (Tailwind's builtin) is removed, and the skeleton's
@@ -1026,6 +1026,7 @@ and a rare arrival.
 | Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms), static | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. No shimmer loop (research #7). Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
 | Skeleton to content | The job page cross-fades in, `ARRIVE.fade` (`--duration-fast`) | `useSkeletonCrossfade(loading)`: only when the placeholder was actually drawn (the load outlasted the delay); a fast load neither shows a placeholder nor fades. The Jobs list already fades its table once on first arrival (row above). The swap itself, and the "Loading…" status leaving, is the text equivalent. |
 | Disclosure open | The region fades in, `--motion-reveal` (190ms), opacity only | Research #6. Only when the reader opens it, not for one open on first paint. Closing is instant (the content leaves the page at once); no height animation (row "Considered and not done" below). The chevron turn is unchanged. |
+| Drop box fan (owner decision, 2026-11-27) | `fanDeal`: the four file-kind tiles (`.file-fan`, `FileTypeFan`) deal in once, as one movement (no stagger), `--duration-medium`, opacity and `translateY(8px)`. Then State-change only: while the drop box is hovered or focused the fan opens a little (`translateX`/`rotate` ×1.12–1.15, `translateY(-3px)`), and while a file is dragged over it opens wide (×1.35–1.4, `translateY(-6px)`), `--duration-base` `--ease-out`; the legend tiles take the accent border | Motion that answers the person (pointer, keyboard, drag), never idle: nothing moves while the box waits (§8 Ambient: no idle decoration). The drag state is also said in words ("Release to upload") and colour, so the motion is never the only signal. Under reduced motion the fan rests fanned with no deal-in and no opening (`index.css`). |
 | Phase advance | The finished phase's glyph and name, and the new current one's, fade in once, `--motion-milestone` (240ms) | Research #4. `PhaseRail` compares each row with the previous commit, so nothing animates on first paint. The rail has no connector line, so there is no fill. The page's one polite region already announces the step change (§13), so the rail adds none. |
 | Count tick | The review group counters ("Check · 10") and the write bar's "N items to fix before writing" roll to their new value (`AnimatedNumber`) | Research #2. A visually hidden plain copy of the number is the button's or sentence's text (the animation is `aria-hidden`, §13), so the change is announced with it; number-flow snaps under reduced motion. Never on scores in the dialog (the reviewer is reading them). |
 | Job state chip | Colour eases at `--motion-feedback` (90ms) when a status changes on the page (Diff ready, Writing, Written) | The word and icon change with it, so colour is never the only cue. |
@@ -1120,18 +1121,29 @@ not add a *third* icon package, do not adopt the mockup's custom symbol set (see
 **`react-bootstrap-icons` is a second, deliberately-scoped source — it is in
 use and stays.** A previous revision of this document asserted it was an unused
 dependency that "must be removed in the same PR that next touches icon usage."
-That was factually wrong and the instruction is withdrawn. Two components import
-it today, both with a stated rationale in the code:
+That was factually wrong and the instruction is withdrawn. One component imports
+it, with a stated rationale in the code:
 
 | File | Imports | Why not lucide |
 |---|---|---|
-| `components/FileTypeIcon.tsx:1` | `FiletypeDoc`, `FiletypeDocx`, `FiletypeMd`, `FiletypePdf`, `FiletypeTxt`, `FiletypeXls`, `FiletypeXlsx` | Bootstrap ships a *distinct pictogram per extension* (a "W" mark for docx, a grid for xlsx). Lucide has no `filetype-*` family, so the lucide version was one generic file glyph recoloured seven ways — undifferentiated at a glance, which is the exact complaint the current code replaced. The file carries this reasoning as a comment; read it before changing it. |
 | `components/WorkItemTypeBadge.tsx:1` | `Award`, `Trophy`, `ListCheck`, `Circle` | Mirrors Azure DevOps' own work-item-type marks. |
 
-**The scope rule:** `react-bootstrap-icons` is permitted **only** for
-file-type glyphs and ADO work-item-type marks — i.e. only inside those two
-components. Everything else is `lucide-react`. Reaching for a Bootstrap glyph
-anywhere else is an §17 change, not a judgement call.
+**File-type icons are Fluent 2 System Icons (owner decision, 2026-11-27).** `components/FileTypeIcon.tsx` draws one consistent glyph
+style for every kind of file (Word, PDF, Excel, PowerPoint, Text, Rich text, Images, Archives, Code, Email, Video, Audio, Other, Folder),
+each kind in its own colour, so every icon has the same size and the colour says the format. The glyphs are Microsoft's Fluent 2 System
+Icons (MIT; `components/fileTypeGlyphs.LICENSE.md`), filled style, generated by `scripts/sync-file-type-glyphs.mjs`
+(`fileTypeGlyphs.generated.ts`) and drawn inline (single-colour, no ids), at Microsoft's native 20 px drawing in rows and 32 px on tiles.
+**Sizes:** the bare glyph at 20 px in lists and the SharePoint tree and 24 px in an upload list; on a tile tinted in its colour at 32 px on
+the uploaded document's line and 48 px for the document card and a file's detail. **Drop boxes** (`DropBoxPrompt`): the fanned kinds
+(`FileTypeFan`, motion in §8), "Drop your requirements document", "or **Choose a file** · up to 40 MB" (drawn as a button, not a second
+control: the whole box is the control), then `FileTypeLegend`: equal tiles by group, each the group's tile, its name and the extensions it
+takes ("Word .docx .doc", "PDF .pdf", "Excel .xlsx .xls .csv", "Text .txt .md"), a list named "File types you can drop"; an accepted
+extension in no group is listed under "Other", never hidden. While a file is dragged over, the headline says "Release to upload". They
+replace the Bootstrap `filetype-*` glyphs on coloured tiles.
+
+**The scope rule:** `react-bootstrap-icons` is permitted **only** for ADO work-item-type marks, inside `WorkItemTypeBadge`; file-type
+icons come **only** from `FileTypeIcon`. Everything else is `lucide-react`. Reaching for another source anywhere else is an §17 change,
+not a judgement call.
 
 Three permitted sizes: `h-3.5` (inline with `text-xs` / `text-meta`), `h-4`
 (default, inline with `text-sm`), `h-5` (headers, empty states). Default
@@ -2185,16 +2197,24 @@ sit on the page, not in cards; the decision list and the mode cards are the only
   model or ask your administrator.", and a "Try again" button; the bar says "Start waits for the file study. Try again above." It replaces
   the old fallback card, which no longer appears for a failed study.
 - **When it is read:** a check mark, "Read as <kind>", and one `tabular-nums` line of counts (`121 requirements · 120 with IDs · 10 Epics ·
-  25 Features`); a ghost "About this file" button. Then the decisions, if any: a header "N decisions · M open" with "Undecided ones keep the
-  file's original.", and one row per proposal ("Rename “General” to “Power”", "Remove the level “Requirements”") with a "Why?" that opens the
-  reason in place and an Accept / Keep pair (`aria-pressed`). A decision never applies itself. Changed decisions are saved with the rulebook
-  on Start.
+  25 Features`, counted as the job will build them, a removed level taken off); a ghost "About this file" button. Then the study's changes
+  to the file's structure, if any: a header "N changes to the file's structure · M undone" with "Applied unless you undo them before
+  Start.", and one row per change, said as done ("Renamed “Requirements” to “Vireo Television Set (VTS)”", "Removed the level “General”")
+  with a "Why?" that opens the reason in place and an outline **Undo** (`RotateCcw`); an undone row reads "Kept “General” as the file has
+  it" with **Apply again**. Changes apply by default (owner rule R4, 2026-11-26, replacing "a decision never applies itself"); the user's
+  undos are saved with the rulebook on Start.
+- **What the tree never has (owner rules, 2026-11-26), whatever the file:** a Feature or Requirement without a parent (R1: code completes
+  the ladder, then AI places each such item among the parents code offers, reported as "Placed by AI"); an Epic or Feature with no
+  requirement below it that the file does not state (R2: its text goes into the item above as context; a placeholder such as "None." or an
+  empty section is left out and listed; one the file states with content, such as a Feature holding Test Cases, is kept and marked "No
+  requirement under it"); a generic container level left in place (R3: renamed or removed by the study); a title over 255 characters (R6:
+  AI names it, or it is cut after a whole word with "…", the full text kept in the description). Same-type nesting stays allowed (R5).
 - **"About this file"** is a dialog sliding in from the right (full screen on a phone) holding all the detail: how it was read (kind, cover,
   the context kept as the top Epic's description), requirements and IDs (the code shape, that the code becomes the Customer ID), examples
   with "↳ under …", what was left out with page ranges, and what was fixed automatically. It has no tree.
 - **The rail** (`lg` and up, sticky): "This run" (mode, where it lands, the time), then "What it will build": the Epics and Features with
-  their requirement counts, recomputed as decisions change (an accepted rename in `accent-ink`, a removed level gone with its children moved
-  up, an open decision marked "?"), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
+  their requirement counts, recomputed as changes are undone or applied (a rename in `accent-ink`, a removed level gone with its children
+  moved up, an undone change marked "as in the file" in `text-xs text-ink-3`), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
   box: rows keep `min-h`). Hidden while the study runs.
 - **The Start bar:** one row: Back, then one column holding what Start waits for (the destination still missing, the reading, the
   missing model) above the §0 safety line, then "Looks right — start job" (primary, `Activity` glyph, never `signal`). On a phone the column
@@ -2838,8 +2858,11 @@ durable `job_failed` event, when there is one, still takes precedence. Reading t
 - **The row checkbox means "will be written".** Every row starts checked; unchecking leaves the item and its subtree out (the same exclude
   endpoint as before). A row under a left-out parent shows unchecked and disabled, its label "Write <title> (its parent is left out)".
   The accessible name is "Write <title>", never "Exclude".
-- **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code, never written to Azure DevOps and
-  never called tags) show after the title in `text-xs text-ink-3`, no chip, no tint. Colour stays for a row that blocks the write.
+- **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code), and "No requirement under it"
+  (an Epic or Feature the file states with content but no requirement below it, kept so the reviewer can untick it; 2026-11-26), are never
+  written to Azure DevOps and never called tags. They show after the title in `text-xs text-ink-3`, no chip, no tint.
+- **"Placed by AI"** (`parent_chosen`, needs review): items the build left without a parent, each moved by AI under one of the parents code
+  offered, with its reason (owner rule R1). Colour stays for a row that blocks the write.
 - **Filter chips for the marks.** Above the tree, one chip per mark present ("TBD · 3"), pressed to narrow the tree; they combine with the
   other filters (an intersection), and with none pressed they do not filter. After the marks, **Suggestion · n** (a suggestion waiting for a
   decision) and **Left out · n** (left out itself or under a left-out parent, the Write bar's count).
@@ -4100,8 +4123,8 @@ the link never lands in proxy or access logs; the server takes the user from the
 - **Mode names (2026-11-25).** The modes are **Standard** and **With AI review** in all user copy; BASELINE and SURVEY are code and API
   names only. Both modes use AI to read the file: never say a mode runs no model or has no model cost. Every AI wording change is a
   suggestion, and copy never says one was applied by itself.
-- **Marks are not tags.** TBD, Should, Will and No obligation are "marked in the text"; "tags" means only the file's own tags, which
-  are written.
+- **Marks are not tags.** TBD, Should, Will and No obligation are "marked in the text", and "No requirement under it" describes an item's
+  place; "tags" means only the file's own tags, which are written.
 - **Glossary.** Say "Azure DevOps" and "work item", never "ADO" or "WI" in prose
   (`WI-12345` as an identifier is fine). The write is **Write to Azure DevOps**;
   "Confirm" is retired (an item that needs attention is "Fix before writing").
@@ -4359,7 +4382,11 @@ Mechanically checkable, and not re-litigable without a §17 change to this file.
 23. **No zero as a placeholder.** Unknown renders `--`.
 24. No custom inline icon SVG, and no third icon package. `lucide-react`
     everywhere, with `react-bootstrap-icons` permitted **only** inside
-    `components/FileTypeIcon.tsx` and `components/WorkItemTypeBadge.tsx` (§10).
+    `components/WorkItemTypeBadge.tsx`, and Fluent 2 System Icons glyphs **only** inside
+    `components/FileTypeIcon.tsx` (§10). Relaxed 2026-11-27 by owner decision, rationale: one consistent,
+    free (MIT) glyph style from Microsoft's own design system, each file kind in its own colour, says the
+    format at a glance at one size; the glyphs are generated path data, not a package and not hand-drawn
+    SVG (`components/fileTypeGlyphs.LICENSE.md`).
 
 ---
 
@@ -4541,5 +4568,8 @@ code, then moving its row up into §18.
 | BASELINE / SURVEY in user copy | Standard / With AI review (§12) | `utils/labels.ts`, `utils/warningKinds.ts`, `components/ProgressBanner.tsx`, `BulkApproveDialog.tsx`, `KbAddDialog.tsx`, `KbAddBatchDialog.tsx`, `KbFileDetailPane.tsx`, `KbUnlistedContentDialog.tsx`, `pages/KnowledgeBase.tsx`, `BatchJobWizard.tsx`, `NewJobWizard.tsx`. 2026-11-25. |
 | Review additions from the approved mockup: Suggestion and Left out chips, row notes, "About this file" from the job header, Its decision, Under it, the empty-description line | §11.3.7, §11.4.5 | `pages/JobDetail.tsx`, `components/DiffTree.tsx` (`rowNotes`), new `components/ParentSections.tsx`, `NodeDetailDialog.tsx` (`decisions`, `onOpenEntry`), `NodeDetailPanel.tsx` (`parentSlot`), `AboutFilePanel.tsx` (`showDecisions`), `api/jobs.ts`; server `GET /jobs/:id/file-reading` (`JobsService.getFileReading`, no migration). Built 2026-11-26. Tests: `ParentSections.test.tsx`, `JobDetail.test.tsx`, `NodeDetailDialog.test.tsx`, `NodeDetailPanel.test.tsx`, `DiffTree.test.tsx`, `jobs.service.spec.ts`, `jobs.controller.spec.ts`. |
 | Browser walk of the new-job page and the review at 1440 and 390 px (2026-11-26) | fixes found by the walk | Local build against a mock API fed by the TV twin through the real ingestion code (no backend, no model). Fixed: a stray "0" in an Epic's dialog (`NodeDetailPanel.tsx`, the file-details condition); the rail list's screen-reader labels stretching the page by about 300 px (`BuildPreview.tsx`, list `relative`, as F15); the blocked Write bar's screen-reader count making the whole window scroll by 52 px after "Fix 1 item" (`WriteBar.tsx`, now `sticky`, which positions it); the Write bar below the fold on arrival (now sticky, owner decision); the Start bar wrapping to three rows with Back alone (`NewJobWizard.tsx`); "About this file" listing a rename as decided on the new-job page after it was switched in the dialog (`JobDetail.tsx`, `aboutReading`); a With AI review suggestion announced as the assistant's (`utils/itemIssues.ts`). Tests: `NodeDetailPanel.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `utils/itemIssues.test.ts`. |
+| Tree-building rules after the wave 1 production probe (owner, 2026-11-26) | §11.2.6, §11.3.7, §12 | Ingestion: `leveling/tree_rules.py` (R2 judged by what the file states, R1 code repair, R6 cut), `leveling/parent_choice.py` + prompt `choose_parent.v1` (R1, AI places), `distillation/title.py` (`shortened_title`, 255), `leveling/requirement_titles.py` (shortened titles to AI), `document_grammar.py` (proposals apply unless undone; markers always left out). Contract: title `maxLength` 255, mark "No requirement under it", warning `parent_chosen`. Frontend: `FileStudyPanel.tsx` (Undo / Apply again), `utils/buildPreview.ts` (`isApplied`, `appliedCounts`), `BuildPreview.tsx`, `AboutFilePanel.tsx`, `ParentSections.tsx`, `JobDetail.tsx` (chip), `utils/warningKinds.ts`. Tests: `test_tree_rules.py`, `test_grammar_builder_rules.py`, `test_file_rules.py`, accuracy scorecard (`states_types`), `buildPreview.test.ts`, `FileStudyPanel.test.tsx`. |
+| One SharePoint connection per user (owner finding, 2026-11-26) | §12 (copy) | The token dialog says the token is the user's own ("Paste your own access token … everyone connects with their own"), never "one token serves everyone"; a user who has not connected sees "Not connected" and **Connect** (`SharePointTokenHelp.tsx`, `utils/connectionHealth.ts`, `KbSourceBar.tsx`). Server: `kb.service.ts` (`userGraphToken`, `SharePointNotConnectedException` 424), `kb.controller.ts`, `kb-ingest-batch.service.ts` (`resumePausedBy` per user), `kb-ingest-runner.ts`, migration `20261127090000_remove_shared_sharepoint_token`; ingestion `main.py` (`_user_graph_token`, no server token). Tests: `kb-sharepoint-per-user.spec.ts`, `tests/kb/*`. |
+| File-type icons and drop boxes (owner decisions, 2026-11-27) | §8, §10 | `components/FileTypeIcon.tsx` (kinds, `FileGlyph`, `FileTypeLegend`, `FileTypeFan`), `fileTypeGlyphs.generated.ts` + `scripts/sync-file-type-glyphs.mjs` + `fileTypeGlyphs.LICENSE.md` (Fluent 2 System Icons, MIT), new `components/DropBoxPrompt.tsx` in `FileDropzone` and `MultiFileDropzone`, `index.css` (`.file-fan`, `fanDeal`, reduced motion); bigger icons at every call site (`KbFileList`, `SharePointFolderTree` with folders, `KbFileDetailPane`, `MultiFileDropzone`, `NewJobWizard`). Replaces the Bootstrap glyph tiles; an interim Microsoft file-type artwork set was tried and dropped the same day. Tests: `FileTypeIcon.test.tsx`, `FileDropzone.test.tsx`, `design/motionContract.test.ts`. |
 | Toasts above a docked bar; no comment text on screen (2026-11-26) | `components/ToastProvider.tsx` (the toast region moves to `bottom-28`, `bottom-44` on a phone, while the page has a `data-dock` bar: the review's Write bar and the new job's Start bar), `WriteBar.tsx` and `NewJobWizard.tsx` (`data-dock`), `ProposalReview.tsx` (the "// Sticky…" text is now a JSX comment) | Measured live: the acceptance toast ends above the Write bar at 1440 (bar top 802) and the toast region ends at 668 at 390 (bar top 702). Tests: `ToastProvider.test.tsx`, `WriteBar.test.tsx`, `ProposalReview.test.tsx`. |
 | Icon-only type in wide review rows; "Stop waiting" code removed (2026-11-26) | `components/DiffTree.tsx` (the wide row's `WorkItemTypeBadge` is `iconOnly`, as the narrow row was: glyph and colour, the type read by assistive tech and in the row's description); `NewJobWizard.tsx`, `FileReadingCard.tsx`, `FileRulesCard.tsx` (the unreachable Stop waiting / Read now handlers, the study's stopped state and `cancelRules`) | Closes the last two items from the walk. Tests: `DiffTree.test.tsx` (wide row), `FileRulesCard.test.tsx` and `FileReadingCard.test.tsx` (the Stop waiting cases now assert there is none; the "after stopping" case is removed with the feature). |

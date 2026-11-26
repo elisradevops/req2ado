@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { FileDropzone } from './FileDropzone';
-import { fileTypeLabel } from './FileTypeIcon';
+import { fileTypeGroups, fileTypeLabel } from './FileTypeIcon';
 import { JOB_FILE_TYPE_LABELS } from '../utils/extension';
 
 describe('FileDropzone', () => {
@@ -22,9 +22,12 @@ describe('FileDropzone', () => {
     expect(accept).toEqual(expect.arrayContaining(['.doc', '.xls', '.csv', '.docx', '.xlsx', '.pdf']));
   });
 
-  it('shows an icon for each type under the box', () => {
+  it('shows the accepted types by group under the box, naming every extension it takes', () => {
     const { container } = render(<FileDropzone onFileSelected={vi.fn()} />);
-    expect(container.querySelectorAll('span[aria-hidden="true"]')).toHaveLength(JOB_FILE_TYPE_LABELS.length);
+    const legend = screen.getByRole('list', { name: 'File types you can drop' });
+    expect(within(legend).getAllByRole('listitem')).toHaveLength(fileTypeGroups(JOB_FILE_TYPE_LABELS).length);
+    expect(container.querySelector('.file-fan')).toHaveAttribute('aria-hidden', 'true');
+    for (const extension of JOB_FILE_TYPE_LABELS) expect(legend).toHaveTextContent(`.${extension}`);
   });
 
   it.each([['doc', 'DOC'], ['xls', 'XLS'], ['csv', 'CSV']])('gives .%s its own label and icon, not the neutral fallback', (extension, label) => {

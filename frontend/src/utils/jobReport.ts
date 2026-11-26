@@ -71,7 +71,7 @@ export function jobReport(input: JobReportInput): string {
     lines.push('## What the document\'s structure left out', '');
     const parts = (leftOut?.detail.parts as { text?: string; page?: number | null; pageEnd?: number | null }[] | undefined) ?? [];
     if (parts.length > 0) {
-      lines.push('Front and back matter, not made into items:', '', ...parts.map((part) => `- ${part.text ?? '(untitled)'}${pagesLabel(part.page, part.pageEnd)}`), '');
+      lines.push('Front and back matter, and sections with nothing to plan, not made into items:', '', ...parts.map((part) => `- ${part.text ?? '(untitled)'}${pagesLabel(part.page, part.pageEnd)}`), '');
     }
     const sections = (context?.detail.sections as string[] | undefined) ?? [];
     if (sections.length > 0) {
@@ -99,6 +99,11 @@ export function jobReport(input: JobReportInput): string {
         lines.push(`**${meta.title}**${affected > 0 ? ` (${affected} ${affected === 1 ? 'item' : 'items'})` : records.length > 1 ? ` (${records.length})` : ''}`, '');
         lines.push(`${meta.short} ${meta.means}`.trim(), '');
         if (group !== 'info') lines.push(`What to do: ${meta.todo}`, '');
+        // What the structure left out is listed in full above; repeating it here would only be cut short.
+        if (LISTED_ABOVE.has(kind)) {
+          lines.push('Listed above, under “What the document\'s structure left out”.', '');
+          continue;
+        }
         for (const record of records.slice(0, 5)) lines.push(`- ${oneLine(warningRecordText(record))}`);
         if (records.length > 5) lines.push(`- … and ${records.length - 5} more`);
         lines.push('');
@@ -114,7 +119,9 @@ function sectionTable(items: DryRunDiffEntry[], warnings: WarningRecord[]): stri
   const rows = new Map<string, { requirements: number; withId: number; flagged: number }>();
   for (const item of items) {
     if (item.type !== 'Requirement') continue;
-    const parent = item.parentLocalId ? byId.get(item.parentLocalId) : undefined;
+    // A sub-requirement counts in its parent requirement's section: the section is the nearest Epic or Feature above, never a requirement.
+    let parent = item.parentLocalId ? byId.get(item.parentLocalId) : undefined;
+    while (parent && parent.type === 'Requirement') parent = parent.parentLocalId ? byId.get(parent.parentLocalId) : undefined;
     const section = parent?.title ?? '(no section)';
     const entry = rows.get(section) ?? { requirements: 0, withId: 0, flagged: 0 };
     entry.requirements += 1;
@@ -199,9 +206,15 @@ function formatDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : date.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 }
 
+const LISTED_ABOVE = new Set(['front_matter_left_out', 'informational_section_folded']);
+
+/** One line of at most 300 characters, cut after a whole word with "…" when longer. */
 function oneLine(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 300 ? `${flat.slice(0, 297)}…` : flat;
+  if (flat.length <= 300) return flat;
+  const room = flat.slice(0, 300);
+  const cut = room.lastIndexOf(' ');
+  return `${(cut > 0 ? room.slice(0, cut) : room.slice(0, 299)).replace(/[\s,;:.]+$/, '')}…`;
 }
 
 function escapeCell(text: string): string {

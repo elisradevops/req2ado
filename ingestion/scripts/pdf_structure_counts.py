@@ -15,15 +15,15 @@ Per file:
   requirements_with_several_ids
                              Requirements whose text holds more than one distinct requirement code at line starts (a merge)
   numbered_sections          headings that print a section number
-  numbered_sections_without_item
-                             of those, how many have no item: a lost section, or one left out on purpose as front or back matter
-                             (compare with left_out_parts_with_pages)
+  numbered_sections_left_out of those, how many were left out on purpose and reported (front or back matter, an empty section)
+  numbered_sections_lost     of those, how many have no item and were not reported left out or kept as context (should be 0)
   contents_like_items        items whose title ends in dot leaders and a page number (a table-of-contents line that became an item)
   grammar                    whether the document's own grammar built the tree (leveling/document_grammar.py), and its requirement-code
                              shape ("a_9", "A-9": letters and digits replaced, never the codes themselves)
   coded_paragraphs           paragraphs that open with the document's requirement code
   requirements_not_items     of those codes, how many are in no Requirement item (should be 0)
-  empty_sections             sections whose whole text is a marker ("None."), kept as empty Features
+  empty_sections             sections whose whole text is a marker ("None."): left out, never an item
+  empty_items                Epics and Features with no Requirement below them (should be 0)
   left_out_parts_with_pages  left-out parts with their first and last page, as [first, last] pairs
 """
 
@@ -51,6 +51,7 @@ from app.leveling.document_layout import (  # noqa: E402
 )
 from app.leveling.numbering import parse_numbering  # noqa: E402
 from app.leveling.tree_builder import build_baseline_tree  # noqa: E402
+from app.leveling.tree_rules import is_marker  # noqa: E402
 
 _CODE_ANYWHERE = re.compile(
     r"(?:^|\n)\s*([A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*[-_]?\d{2,8})\s*(?:[:.)\]]|\s[-–—])"
@@ -86,15 +87,22 @@ def counts_for(path: Path) -> dict:
     # repeats the heading), or when it was kept as context in its parent (its text, without its heading, is that item's description).
     built_from = {" ".join((n.source_title or "").split()).casefold() for n in nodes}
     kept_sections = {" ".join(t.split()).casefold() for t in (kept.detail.get("sections", []) if kept else [])}
-    without_item = 0
+    left_out_texts = [
+        " ".join(p["text"].split()).casefold() for p in (left_out.detail.get("parts", []) if left_out else [])
+    ]
+    lost = reported = 0
     for heading in numbered:
         text = " ".join(heading.text.split()).casefold()
         if text in built_from or text in kept_sections:
             continue
-        if not any(
-            title.endswith(text) or text.endswith(title) for title in item_titles if title
-        ) and not any(text in d for d in descriptions):
-            without_item += 1
+        if any(title.endswith(text) or text.endswith(title) for title in item_titles if title) or any(
+            text in d for d in descriptions
+        ):
+            continue
+        if any(part == text or part.startswith(text) or text.startswith(part) for part in left_out_texts if part):
+            reported += 1
+        else:
+            lost += 1
     return {
         "items": by_type,
         "front_matter_left_out": {
@@ -109,7 +117,8 @@ def counts_for(path: Path) -> dict:
             1 for n in requirements if len(ids_in(n.description)) > 1
         ),
         "numbered_sections": len(numbered),
-        "numbered_sections_without_item": without_item,
+        "numbered_sections_left_out": reported,
+        "numbered_sections_lost": lost,
         "contents_like_items": sum(1 for n in nodes if is_contents_entry(n.title)),
         **_grammar_counts(doc, tree),
     }
@@ -127,14 +136,44 @@ def _grammar_counts(doc, tree) -> dict:  # noqa: ANN001
         "grammar": {"applied": grammar is not None, "code_shape": shape.shape if shape else None},
         "coded_paragraphs": sum(1 for t in paragraphs if shape and shape.opens(t)),
         "requirements_not_items": len(coverage.detail.get("codes", [])) if coverage else 0,
-        "empty_sections": sum(
-            1 for n in tree.nodes if n.type.value == "Feature" and n.verbatim and n.description.count("\n") == 1
-            and not any(c.parent_local_id == n.local_id for c in tree.nodes)
-        ),
+        "empty_sections": _marker_sections(doc),
+        "empty_items": _empty_items(tree.nodes),
         "left_out_parts_with_pages": [
             [p.get("page"), p.get("pageEnd", p.get("page"))] for p in (left_out.detail.get("parts", []) if left_out else [])
         ],
     }
+
+
+def _marker_sections(doc) -> int:  # noqa: ANN001
+    """Numbered sections whose whole text, up to the next heading, is one short marker ("None.", "Not applicable.")."""
+    count = 0
+    blocks = doc.blocks
+    for i, block in enumerate(blocks):
+        number = parse_numbering(block.text)[0] if block.kind.value == "heading" else None
+        if number is None:
+            continue
+        body, next_heading = [], None
+        for following in blocks[i + 1 :]:
+            if following.kind.value == "heading":
+                next_heading = parse_numbering(following.text)[0]
+                break
+            body.append(following)
+        has_subsections = bool(next_heading) and next_heading.startswith(f"{number.rstrip('.')}.")
+        if not has_subsections and len(body) == 1 and body[0].kind.value in ("paragraph", "list_item") and is_marker(body[0].text):
+            count += 1
+    return count
+
+
+def _empty_items(nodes) -> int:  # noqa: ANN001
+    by_id = {n.local_id: n for n in nodes}
+    holds: set[str] = set()
+    for n in nodes:
+        if n.type.value == "Requirement":
+            parent = by_id.get(n.parent_local_id or "")
+            while parent is not None and parent.local_id not in holds:
+                holds.add(parent.local_id)
+                parent = by_id.get(parent.parent_local_id or "")
+    return sum(1 for n in nodes if n.type.value != "Requirement" and n.local_id not in holds)
 
 
 def main() -> int:

@@ -77,7 +77,8 @@ from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
-from app.leveling.requirement_titles import write_requirement_titles
+from app.leveling.parent_choice import choose_parents
+from app.leveling.requirement_titles import was_shortened, write_requirement_titles
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.study import (
@@ -1477,11 +1478,8 @@ class KbIngestUrlRequest(BaseModel):
     # larger blast radius than one deliberately-chosen standards doc, so
     # this stays scoped to the single-document upload path for now.
     retrieval_mode: str | None = None
-    # Optional per-request override for the shared SharePoint token -- set
-    # by the orchestrator when a user has rotated the token via
-    # POST /kb/sharepoint/reconnect (stored in its credential vault, not
-    # this process's env). Falls back to settings.sharepoint_token when
-    # absent, same as before this field existed.
+    # The acting user's own SharePoint token, from the orchestrator's credential vault. Required for every SharePoint call: there is no
+    # server-wide token (_user_graph_token).
     graph_token: str | None = None
 
 
@@ -2438,13 +2436,29 @@ async def _survey_level(
     return tree
 
 
+def _needs_model_passes(tree: WorkItemTree) -> bool:
+    """Whether the tree has anything the model passes after the build work on: grammar-built requirements to title, items the build left
+    without a parent (R1), or titles it had to shorten (R6)."""
+    return any(
+        n.verbatim and n.type == WorkItemType.REQUIREMENT or was_shortened(n) for n in tree.nodes
+    ) or any(w.kind == WarningKind.CATCHALL_EPIC_WRAP for w in tree.warnings)
+
+
 def _with_requirement_titles(tree: WorkItemTree, rulebook: FileRulebook | None, client, user_id: str | None) -> WorkItemTree:  # noqa: ANN001
-    """Short titles for the requirements the document's grammar built (app.leveling.requirement_titles), unless the study found the file
-    gives each requirement its own title (title policy "extract"). Fail-open: the extracted titles stay, with a warning."""
+    """The model passes after the build, in both modes (owner rules, 2026-11-26), all fail-open: code's result stays when a pass fails.
+    First the parents of the items the build left without one (app.leveling.parent_choice, R1); then short titles for the requirements the
+    document's grammar built, unless the study found the file gives each requirement its own title (title policy "extract"), and for every
+    title the build had to shorten to the Azure DevOps limit, whatever the policy (app.leveling.requirement_titles, R6)."""
+    choose_parents(tree.nodes, tree.warnings, client, user_id)
     document = rulebook.document if rulebook is not None else None
-    if getattr(document, "title_policy", None) == "extract":
-        return tree
-    write_requirement_titles(tree.nodes, client, tree.warnings, user_id, settings.survey_chunk_concurrency)
+    write_requirement_titles(
+        tree.nodes,
+        client,
+        tree.warnings,
+        user_id,
+        settings.survey_chunk_concurrency,
+        grammar_requirements=getattr(document, "title_policy", None) != "extract",
+    )
     return tree
 
 
@@ -2804,7 +2818,7 @@ async def level(
     tree.warnings.extend(stale_rulebook)
     # Both modes read the file with AI (owner decision, 2026-11-25): a job's requirements get short titles. A call without a user (the
     # wizard's left-out preview) has no model of its own and keeps the extracted titles.
-    if user_id and any(n.verbatim and n.type == WorkItemType.REQUIREMENT for n in tree.nodes):
+    if user_id and _needs_model_passes(tree):
         try:
             client = await _survey_client(model, user_id)
         except Exception as exc:  # noqa: BLE001 -- fail-open: titles are an enhancement, never a dependency of the tree
@@ -3680,6 +3694,15 @@ async def kb_get_profile(user_id: str) -> dict:
     return _profile_response(profile)
 
 
+def _user_graph_token(body: BaseModel) -> str:
+    """The acting user's own SharePoint token, which the orchestrator sends with every SharePoint request. There is no server-wide token
+    to fall back to (owner finding, 2026-11-26: one shared token served every user): without the user's own, the request is refused."""
+    token = getattr(body, "graph_token", None)
+    if not token:
+        raise HTTPException(status_code=424, detail="SharePoint is not connected for this user.")
+    return token
+
+
 @app.post("/kb/ingest-url", response_model=IngestResult)
 async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # Token from env (SHAREPOINT_TOKEN / GRAPH_TOKEN). GraphClient raises
@@ -3687,9 +3710,7 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # makes synchronous httpx calls; run in the threadpool like /level and
     # the old /kb/sync so it never blocks the single-worker event loop.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_document_from_url,
             body.url,
@@ -3736,9 +3757,7 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
     # Listing the folder itself (validate_share_url, list_folder_children)
     # can still fail with ValueError/GraphApiError, mapped the same way.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_folder_from_url,
             body.url,
@@ -3782,9 +3801,7 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
     # own sharing link. Same token/threadpool/error-mapping reasoning as
     # every other Graph-backed route here.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_folder_child,
             body.name,
@@ -3824,9 +3841,7 @@ async def kb_ingest_drive_item(body: KbIngestDriveItemRequest) -> IngestResult:
     # ingests them later, when a URL it was handed at browse time may have expired, so the file is looked up and downloaded
     # here, now. Same token/threadpool/error-mapping reasoning as /kb/ingest-item above.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_drive_item,
             body.drive_id,
@@ -3964,9 +3979,7 @@ async def kb_browse_folder(body: KbBrowseFolderRequest) -> list[FolderChildSumma
     # ingest. Same token/error-mapping/threadpool reasoning as every other
     # Graph-backed route here.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(browse_shared_folder, body.url, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3981,9 +3994,7 @@ async def kb_browse_children(body: KbBrowseChildrenRequest) -> list[FolderChildS
     # expansion (addressed by drive_id + item_id, not a share URL -- see
     # browse_service.browse_subfolder's docstring).
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(browse_subfolder, body.drive_id, body.item_id, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3999,7 +4010,7 @@ async def kb_sharepoint_status(body: KbSharePointStatusRequest) -> KbSharePointS
     # committing it to the vault (see /kb/sharepoint/reconnect there) as well
     # as the currently-effective one after rotation; falls back to this
     # process's own env var exactly like every other Graph-backed route.
-    token = body.graph_token or settings.sharepoint_token
+    token = body.graph_token
     if not token:
         return KbSharePointStatusResult(status="not_configured")
     expires_in_seconds = decode_jwt_expiry_seconds(token)

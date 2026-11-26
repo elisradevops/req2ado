@@ -372,11 +372,11 @@ export class KbIngestBatchService {
   }
 
   /**
-   * Continues every batch that paused for `reason` (whoever owns it), e.g. all that waited for a fresh SharePoint token once
-   * someone replaced it: the token is shared, so one reconnect unblocks all of them. Returns how many it resumed.
+   * Continues `userId`'s batches that paused for `reason`, e.g. the ones that waited for a fresh SharePoint token once that user
+   * connected again. Never another user's: each runs on its own owner's token (owner finding, 2026-11-26). Returns how many it resumed.
    */
-  async resumePausedBy(reason: string): Promise<number> {
-    const paused = await this.prisma.kbIngestBatch.findMany({ where: { status: 'paused', pauseReason: reason }, select: { id: true } });
+  async resumePausedBy(reason: string, userId: string): Promise<number> {
+    const paused = await this.prisma.kbIngestBatch.findMany({ where: { status: 'paused', pauseReason: reason, userId }, select: { id: true } });
     if (paused.length === 0) return 0;
     const resumed = await this.prisma.kbIngestBatch.updateMany({
       where: { id: { in: paused.map((b) => b.id) }, status: 'paused' },

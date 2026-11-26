@@ -23,7 +23,8 @@ def test_the_reading_gives_the_verdict_the_decisions_the_fixes_and_the_outline(t
     ]
     assert [(f["from"], f["to"]) for f in reading["fixes"]] == [("Enclousure", "Enclosure")]
     assert [e["customerId"] for e in reading["examples"]] == ["gen_1", "gen_2", "men_3.a"]
-    assert reading["examples"][2]["under"].startswith("The on-screen menu shall show")  # a sub-requirement sits under its requirement
+    # A sub-requirement sits under its requirement, named by its code: before the job's short titles, its title is still a whole sentence.
+    assert reading["examples"][2]["under"] == "men_3"
     assert any("REQUIREMENT IDENTITIES" in part["text"] for part in reading["leftOut"])
     roots = [o for o in reading["outline"] if o["parent"] is None]
     assert [(r["type"], r["title"], r["requirements"]) for r in roots] == [("Epic", "Requirements", 121)]

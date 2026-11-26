@@ -136,7 +136,7 @@ class DocumentRules:
     proposals: tuple[Proposal, ...] = ()
     spelling_fixes: tuple[tuple[str, str], ...] = ()
     title_policy: str | None = None
-    # The user's decision on each proposal (block id, "accept" | "keep"), made in the wizard; a proposal with none keeps the file's original.
+    # The user's decision on each proposal (block id, "accept" | "keep"), made in the wizard; a proposal with none applies (owner rule R4).
     proposal_decisions: tuple[tuple[str, str], ...] = ()
 
     def has_profile(self) -> bool:

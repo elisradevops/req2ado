@@ -16,38 +16,27 @@ def test_boundary_255_chars_unchanged() -> None:
     assert len(result) == 255
 
 
-def test_boundary_exactly_256_chars_unchanged() -> None:
-    text = "A" * 256
-    result = extract_baseline_title(text)
-    assert result == text
-    assert len(result) == 256
-
-
-def test_boundary_257_chars_truncated_to_256() -> None:
-    text = "A" * 257
-    result = extract_baseline_title(text)
-    assert len(result) == 256
+def test_boundary_256_chars_is_over_the_azure_devops_limit() -> None:
+    # Azure DevOps refuses a title over 255 characters (owner rule R6, 2026-11-26): one more is shortened, with the "…" marker.
+    result = extract_baseline_title("A" * 256)
+    assert len(result) == 255
+    assert result.endswith("…")
 
 
 def test_truncates_at_last_word_boundary_when_one_exists_within_the_window() -> None:
-    # "word " repeated so a whitespace boundary exists well before char 256;
-    # the function must trim back to that boundary rather than hard-cutting
-    # mid-word, and must never exceed max_length.
-    text = ("word " * 60).strip()  # 299 chars, many boundaries before 256
+    # "word " repeated so a whitespace boundary exists well before the limit; the function must cut back to that boundary rather than
+    # inside a word, mark the cut, and never exceed the limit.
+    text = ("word " * 60).strip()  # 299 chars, many boundaries before 255
     result = extract_baseline_title(text)
-    assert len(result) <= 256
-    assert not result.endswith("wor")  # not a mid-word hard cut
-    assert text.startswith(result)  # result is a genuine prefix, not paraphrased
+    assert len(result) <= 255
+    assert result.endswith("word…")  # a whole word, then the marker
+    assert text.startswith(result[:-1])  # a genuine prefix, not paraphrased
 
 
 def test_hard_cuts_when_no_word_boundary_exists_in_window() -> None:
-    # No whitespace anywhere — no boundary to trim to, must hard-cut at
-    # exactly max_length. This exact case (a numbering-stripped run of "A"s)
-    # matches the existing Phase 2 golden test in test_tree_builder.py, which
-    # must keep passing unmodified after this function is wired in.
-    text = "A" * 300
-    result = extract_baseline_title(text)
-    assert len(result) == 256
+    # No whitespace anywhere: no boundary to cut back to, so it is cut at the limit, the marker included.
+    result = extract_baseline_title("A" * 300)
+    assert result == "A" * 254 + "…"
 
 
 def test_never_summarizes_or_paraphrases_short_text() -> None:
@@ -58,26 +47,21 @@ def test_never_summarizes_or_paraphrases_short_text() -> None:
 
 
 def test_multibyte_codepoints_truncate_safely_without_corruption() -> None:
-    # Python str slicing operates on Unicode codepoints, not bytes, so a
-    # 300-codepoint emoji string truncates to exactly max_length codepoints
-    # without raising or producing invalid output. Full extended-grapheme-
-    # cluster awareness (e.g. not splitting an emoji+modifier sequence) is
-    # explicitly out of scope for this phase.
-    text = "\U0001f600" * 300  # 😀 repeated 300 times, no whitespace
-    result = extract_baseline_title(text)
-    assert len(result) == 256
-    assert isinstance(result, str)
+    # Python str slicing operates on Unicode codepoints, not bytes, so a 300-codepoint emoji string is cut to the limit in codepoints
+    # without raising or producing invalid output. Extended-grapheme-cluster awareness is out of scope.
+    result = extract_baseline_title("\U0001f600" * 300)  # 😀 repeated 300 times, no whitespace
+    assert result == "\U0001f600" * 254 + "…"
 
 
 def test_multibyte_text_with_word_boundaries_trims_correctly() -> None:
     text = ("שלום " * 60).strip()  # Hebrew "hello" repeated, many boundaries
     result = extract_baseline_title(text)
-    assert len(result) <= 256
-    assert text.startswith(result)
+    assert len(result) <= 255
+    assert result.endswith("שלום…") and text.startswith(result[:-1])
 
 
 def test_respects_a_custom_max_length() -> None:
-    assert extract_baseline_title("Channel scan test", max_length=7) == "Channel"
+    assert extract_baseline_title("Channel scan test", max_length=8) == "Channel…"
 
 
 def test_uses_only_the_first_sentence_of_multi_sentence_text() -> None:
@@ -105,19 +89,16 @@ def test_falls_back_to_whole_text_when_no_sentence_boundary_exists() -> None:
 
 
 def test_truncates_the_first_sentence_when_it_alone_exceeds_max_length() -> None:
-    # The first sentence itself is too long -- truncate JUST that sentence
-    # at a word boundary, not the whole multi-sentence text (a later
-    # sentence must never leak into the truncated result).
+    # The first sentence itself is too long -- shorten JUST that sentence at a word boundary, not the whole multi-sentence text (a later
+    # sentence must never leak into the result).
     long_sentence = ("word " * 60).strip() + "."  # ~300 chars, one long sentence
     text = long_sentence + " A short second sentence."
     result = extract_baseline_title(text)
-    assert len(result) <= 256
+    assert len(result) <= 255
     assert "second sentence" not in result
-    assert long_sentence.startswith(result)
+    assert long_sentence.startswith(result[:-1]) and result.endswith("…")
 
 
 def test_hard_cuts_the_first_sentence_when_it_has_no_word_boundary() -> None:
     text = ("A" * 300) + ". A short second sentence."
-    result = extract_baseline_title(text)
-    assert len(result) == 256
-    assert result == "A" * 256
+    assert extract_baseline_title(text) == "A" * 254 + "…"

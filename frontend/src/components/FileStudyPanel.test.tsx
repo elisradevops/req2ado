@@ -38,15 +38,19 @@ describe('FileStudyPanel', () => {
     expect(screen.queryByText(/minute/)).toBeNull(); // no fixed duration promised
   });
 
-  it('shows one verdict line and each decision, which the user accepts or keeps', () => {
+  it('shows one verdict line and each change as applied, which the user can undo or apply again', () => {
+    // Owner rule R4 (2026-11-26): the study's proposals apply unless the user undoes them before Start.
     const onDecide = vi.fn();
     render(<FileStudyPanel status="ready" reading={reading} decisions={{ b2: 'keep' }} onDecide={onDecide} onOpenAbout={vi.fn()} />);
     expect(screen.getByText('Read as a requirements-tool export')).toBeInTheDocument();
-    expect(screen.getByTestId('file-study-counts')).toHaveTextContent(verdictCounts(reading));
-    expect(screen.getByText('2 decisions · 1 open')).toBeInTheDocument();
-    fireEvent.click(within('Decision for Requirements', 'Accept'));
-    expect(onDecide).toHaveBeenCalledWith('b1', 'accept');
-    expect(within('Decision for General', 'Keep')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('file-study-counts')).toHaveTextContent(verdictCounts(reading, { b2: 'keep' }));
+    expect(screen.getByText("2 changes to the file's structure · 1 undone")).toBeInTheDocument();
+    expect(screen.getByText('Renamed “Requirements” to “Vireo Television Set (VTS)”')).toBeInTheDocument();
+    expect(screen.getByText('Kept “General” as the file has it')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo: keep “Requirements” as the file has it' }));
+    expect(onDecide).toHaveBeenCalledWith('b1', 'keep');
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the change to “General” again' }));
+    expect(onDecide).toHaveBeenCalledWith('b2', 'accept');
   });
 
   it('opens the reason under a decision on Why?', () => {
@@ -59,19 +63,16 @@ describe('FileStudyPanel', () => {
   });
 });
 
-function within(group: string, name: string): HTMLElement {
-  const container = screen.getByRole('group', { name: group });
-  return Array.from(container.querySelectorAll('button')).find((b) => b.textContent === name)!;
-}
-
 describe('BuildPreview', () => {
-  it('shows the Epics and Features with an open decision marked, and an accepted one applied', () => {
+  it('shows the Epics and Features with every change applied, and an undone one as in the file', () => {
     const { rerender } = render(<BuildPreview reading={reading} decisions={{}} />);
-    expect(screen.getAllByLabelText('A decision is open')).toHaveLength(2);
-    rerender(<BuildPreview reading={reading} decisions={{ b1: 'accept', b2: 'accept' }} />);
     expect(screen.getByText('Vireo Television Set (VTS)')).toHaveAttribute('title', 'Renamed from Requirements');
     expect(screen.queryByText('General')).toBeNull();
     expect(screen.getByTestId('build-preview')).toHaveTextContent('Removed level: General.');
+    rerender(<BuildPreview reading={reading} decisions={{ b1: 'keep', b2: 'keep' }} />);
+    expect(screen.getByText('Requirements')).toBeInTheDocument();
+    expect(screen.getByText('General')).toBeInTheDocument();
+    expect(screen.getAllByText('as in the file')).toHaveLength(2);
   });
 });
 

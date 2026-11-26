@@ -194,6 +194,18 @@ PARAMETER_PAIR_SPEC = KeyedSpec(
 
 # The hierarchy check (app.leveling.hierarchy_check): per item the ladder does not allow, one of the fixes code offered for it. The option ids
 # differ per item, so the schema cannot enumerate them; the client accepts only an id offered for that item.
+# choose_parent (app.leveling.parent_choice): one offered place per item the build left without a parent, with a reason (owner rule R1).
+CHOOSE_PARENT_SPEC = KeyedSpec(
+    name="choose_parent",
+    schema_name="parents_by_item",
+    fields={"option": {"type": "string"}, "reason": {"type": "string"}},
+    field_prompts={
+        "option": "'option' (exactly one of the option ids listed for that item)",
+        "reason": "'reason' (one short sentence)",
+    },
+    id_noun="item id",
+)
+
 HIERARCHY_FIX_SPEC = KeyedSpec(
     name="hierarchy_fix",
     schema_name="hierarchy_fixes_by_item",

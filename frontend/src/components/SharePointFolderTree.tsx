@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { browseSubfolder, ingestFolderItem, type FolderTreeEntry } from '../api/kb';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Spinner } from '../ui/Spinner';
@@ -120,11 +120,7 @@ function FolderTreeNode({
         ) : (
           <span className="w-3.5 flex-none" />
         )}
-        {entry.isFolder ? (
-          <Folder className="h-3.5 w-3.5 flex-none text-ink-3" />
-        ) : (
-          <FileTypeIcon extension={extensionOf(entry.name)} className="h-4 w-4 rounded-sm" />
-        )}
+        <FileTypeIcon folder={entry.isFolder} extension={entry.isFolder ? '' : extensionOf(entry.name)} className="h-5 w-5" />
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
         {!foldersOnly && !entry.isFolder && <span className="flex-none font-mono text-xs text-ink-3">{formatFileSize(entry.sizeBytes)}</span>}
         {!foldersOnly && !entry.isFolder && (

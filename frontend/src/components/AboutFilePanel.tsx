@@ -2,6 +2,7 @@ import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { kindLabel } from './FileStudyPanel';
 import { Dialog } from '../ui/Dialog';
 import type { FileReading } from '../api/jobs';
+import { isApplied } from '../utils/buildPreview';
 
 // "About this file" (the approved mockup, 2026-11-25): everything about how the file was read, in one side panel opened from the new-job page
 // and the job header -- how it was read, what a requirement and its ID look like, examples, what was left out and what was fixed
@@ -64,7 +65,7 @@ export function AboutFilePanel({ open, onOpenChange, reading, codes, showDecisio
               {reading.decisions.map((d) => (
                 <li key={d.headingId} dir="auto">
                   {d.action === 'rename' ? `Rename “${d.title}” to “${d.newTitle}”` : `Remove the level “${d.title}”`}:{' '}
-                  {d.decision === 'accept' ? 'accepted' : 'kept as the file has it'}.
+                  {isApplied(d.decision) ? 'applied' : 'undone, kept as the file has it'}.
                 </li>
               ))}
             </ul>
@@ -78,8 +79,8 @@ export function AboutFilePanel({ open, onOpenChange, reading, codes, showDecisio
               {reading.examples.map((example) => (
                 <li key={example.customerId} className="flex flex-col">
                   <span className="flex items-center gap-1.5">
-                    <WorkItemTypeBadge type="Requirement" iconOnly />
-                    <span className="rounded-sm border border-info-border bg-info-soft px-1.5 font-mono text-meta text-info-ink">{example.customerId}</span>
+                    <WorkItemTypeBadge type="Requirement" iconOnly />{' '}
+                    <span className="rounded-sm border border-info-border bg-info-soft px-1.5 font-mono text-meta text-info-ink">{example.customerId}</span>{' '}
                     <span dir="auto" className="min-w-0 truncate">
                       {example.title}
                     </span>

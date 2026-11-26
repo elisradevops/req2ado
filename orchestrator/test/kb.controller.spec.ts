@@ -174,14 +174,14 @@ describe('KbController', () => {
     expect(result).toBe(documents);
   });
 
-  it('sharePointStatus() delegates to the service', async () => {
+  it('sharePointStatus() reports the signed-in user own connection', async () => {
     const status = { status: 'valid', expiresInSeconds: 2820 };
     const kbService = { getSharePointStatus: jest.fn().mockResolvedValue(status) };
     const controller = new KbController(kbService as any);
 
-    const result = await controller.sharePointStatus();
+    const result = await controller.sharePointStatus(TEST_USER);
 
-    expect(kbService.getSharePointStatus).toHaveBeenCalled();
+    expect(kbService.getSharePointStatus).toHaveBeenCalledWith(TEST_USER.userId);
     expect(result).toBe(status);
   });
 

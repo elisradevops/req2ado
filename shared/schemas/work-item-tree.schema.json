@@ -48,7 +48,7 @@
         "local_id": { "type": "string" },
         "type": { "type": "string", "enum": ["Epic", "Feature", "Requirement"] },
         "parent_local_id": { "type": ["string", "null"] },
-        "title": { "type": "string", "maxLength": 256 },
+        "title": { "type": "string", "maxLength": 255 },
         "description": { "type": "string" },
         "customer_id": { "type": ["string", "null"] },
         "se_coverage_ref": {
@@ -107,8 +107,8 @@
         },
         "derived_marks": {
           "type": "array",
-          "items": { "type": "string", "enum": ["TBD", "Should", "Will", "No obligation"] },
-          "description": "Review marks read from a Requirement's own text, for filtering in the review. Never written to Azure DevOps."
+          "items": { "type": "string", "enum": ["TBD", "Should", "Will", "No obligation", "No requirement under it"] },
+          "description": "Review marks for filtering in the review, never written to Azure DevOps: read from a Requirement's own text (TBD, Should, Will, No obligation), or set on an Epic or Feature the file states with content but no requirement under it."
         },
         "description_suggestion": {
           "type": ["string", "null"],
@@ -243,7 +243,7 @@
           "description": "Closed vocabulary (app.workitem.model.WarningKind). ado_verification_failed is deliberately absent -- that kind is only ever added by the orchestrator's own post-processing, never by ingestion's /level response this schema describes.",
           "enum": [
             "reparented_to_feature", "group_reparented", "bridge_feature_synthesized",
-            "roots_regrouped", "catchall_epic_wrap", "near_duplicate_conflict", "conflict_judgment_skipped",
+            "roots_regrouped", "catchall_epic_wrap", "parent_chosen", "near_duplicate_conflict", "conflict_judgment_skipped",
             "output_truncated", "no_model_title", "invalid_figure_ids", "invalid_table_ids",
             "invalid_node_type", "dangling_parent", "low_grounding", "zero_nodes",
             "dropped_blocks", "missing_table_group_coverage", "external_reference",

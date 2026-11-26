@@ -117,9 +117,9 @@ def test_mock_tv_remote_docx_long_line_title_is_truncated_not_summarized() -> No
     tree = build_baseline_tree(doc)
     long_node = next(n for n in tree.nodes if n.description.startswith("In accordance with"))
 
-    assert len(long_node.title) <= 256
-    assert long_node.title == long_node.description[: len(long_node.title)]
-    assert long_node.description.startswith(long_node.title)
+    # Shortened within the Azure DevOps limit at a word, with the "…" marker (owner rule R6); the full line stays in the description.
+    assert len(long_node.title) <= 255 and long_node.title.endswith("…")
+    assert long_node.description.startswith(long_node.title[:-1])
 
 
 def test_mock_documents_pass_fidelity_verification() -> None:

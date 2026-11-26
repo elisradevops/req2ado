@@ -445,7 +445,7 @@ def test_two_byte_identical_requirement_lines_get_distinct_v2_identity_hashes() 
     assert repeated[0].content_hash and repeated[1].content_hash
 
 
-def test_title_is_truncated_to_256_chars() -> None:
+def test_title_is_shortened_to_the_azure_devops_limit() -> None:
     long_text_doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
@@ -458,7 +458,7 @@ def test_title_is_truncated_to_256_chars() -> None:
         ],
     )
     tree = build_baseline_tree(long_text_doc)
-    assert len(tree.nodes[0].title) == 256
+    assert len(tree.nodes[0].title) == 255 and tree.nodes[0].title.endswith("…")  # owner rule R6
 
 
 def test_table_only_document_folds_each_table_into_a_requirement_instead_of_an_empty_tree() -> None:

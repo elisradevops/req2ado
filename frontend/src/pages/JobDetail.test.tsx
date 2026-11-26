@@ -5353,7 +5353,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     await mount({ id: 'reading-1', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Enclosure' })], warnings: [] });
     expect(await screen.findByText('Spelling fixed')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'About this file' }));
-    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Remove the level “Requirements”: accepted.');
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Remove the level “Requirements”: applied.');
   });
 
   it('lists a rename in "About this file" as it stands now: kept once its item has the file\'s title back', async () => {
@@ -5367,7 +5367,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     });
     await mount({ id: 'reading-2', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Design and construction' })], warnings: [] });
     await userEvent.click(await screen.findByRole('button', { name: 'About this file' }));
-    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Rename “Design and construction” to “Environment and safety”: kept as the file has it.');
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Rename “Design and construction” to “Environment and safety”: undone, kept as the file has it.');
   });
 
   it('names the next step, "Fix 2 items", while a fix item is open: states the reason in text, and never opens the write dialog', async () => {

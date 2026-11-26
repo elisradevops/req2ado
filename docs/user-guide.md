@@ -10,7 +10,7 @@ Three connections feed the app. The status line at the bottom of the navigation 
 
 1. **Azure DevOps.** Connected when you sign in. If it lapses, open the account menu (your name, top right), choose **Profile & connections** (the page is titled Profile and connections), and reconnect there.
 2. **AI model (Open WebUI).** Needed before your first job. In **Profile and connections**, open **Configure** on the Open WebUI row, paste an API key from your Open WebUI account, press **Load models**, pick a model and save. The app cannot create the key for you.
-3. **SharePoint (knowledge base only).** Skip this if you do not use a knowledge base. On **Knowledge base**, press **Reconnect**. The dialog links to Graph Explorer and lists the three steps: sign in there, copy the access token, paste it back. The page then shows when the connection expires; reconnect when it does. One token serves everyone who uses the knowledge base.
+3. **SharePoint (knowledge base only).** Skip this if you do not use a knowledge base. On **Knowledge base**, press **Connect** (**Reconnect** once you have connected before). The dialog links to Graph Explorer and lists the three steps: sign in there, copy the access token, paste it back. The page then shows when the connection expires; reconnect when it does. The token is yours: everyone connects with their own, so each person's knowledge base reads only what they may open in SharePoint.
 
 ## Modes
 

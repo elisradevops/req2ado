@@ -117,7 +117,7 @@ describe('ConnectionStatusItem', () => {
 
       const dialog = await open();
 
-      expect(within(dialog).getByText('Not configured')).toBeInTheDocument();
+      expect(within(dialog).getByText('Not connected')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'System status: All systems OK' })).toBeInTheDocument();
     });
 

@@ -65,7 +65,8 @@ function sharePointRow(entry: StatusEntry<SharePointStatus>): ConnectionRow {
     case 'unreachable':
       return { ...base, state: 'attention', word: "Can't reach Microsoft Graph" };
     case 'not_configured':
-      return { ...base, state: 'off', word: 'Not configured' };
+      // Each user connects SharePoint with their own token (2026-11-26): "not configured" means this user has not connected yet.
+      return { ...base, state: 'off', word: 'Not connected' };
     default:
       return { ...base, state: 'checking', word: CHECKING };
   }

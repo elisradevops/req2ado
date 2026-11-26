@@ -1,9 +1,19 @@
 import { createHash } from 'node:crypto';
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, HttpException, Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
-import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
+import { CredentialVaultService, userOwnerKey } from '../auth/credential-vault.service';
 import { KbDriveMismatchException, findDriveConflict } from './kb-drive';
+
+/**
+ * The user has no SharePoint token of their own (owner finding, 2026-11-26: one shared token used to serve every user). Answered as 424, as
+ * an expired token is (kb.controller.ts), so the page offers to connect and the batch runner pauses that user's batch until they do.
+ */
+export class SharePointNotConnectedException extends HttpException {
+  constructor() {
+    super('SharePoint is not connected for you. Connect it with your own token on the Knowledge base page.', 424);
+  }
+}
 
 interface VaultedSharePointToken {
   token: string;
@@ -146,29 +156,34 @@ export class KbService {
       hasModel?(userId: string): Promise<boolean>;
     },
     // Continues batch ingests that paused for want of a valid SharePoint token once a new one is saved.
-    private readonly batchResumer?: { resumePausedBy(reason: string): Promise<number> },
+    private readonly batchResumer?: { resumePausedBy(reason: string, userId: string): Promise<number> },
   ) {}
 
   /**
-   * The shared SharePoint token, if it's been rotated via
-   * POST /kb/sharepoint/reconnect (stored in the vault). Returns null when
-   * no one has rotated it yet -- callers fall back to ingestion's own
-   * SHAREPOINT_TOKEN/GRAPH_TOKEN env var in that case, unchanged from
-   * before this vault path existed.
+   * The user's own SharePoint token, saved by POST /kb/sharepoint/reconnect; null when they have not connected. Every SharePoint call acts
+   * with the token of the user it acts for: never another user's, never a server-wide one (owner finding, 2026-11-26).
    */
-  private async resolveGraphTokenOverride(): Promise<string | null> {
-    const raw = await this.credentialVault.get(SHARED_OWNER_KEY, 'sharepoint_token');
+  private async userGraphToken(userId: string): Promise<string | null> {
+    const raw = await this.credentialVault.get(userOwnerKey(userId), 'sharepoint_token');
     if (!raw) return null;
     try {
-      return (JSON.parse(raw) as VaultedSharePointToken).token;
+      return (JSON.parse(raw) as VaultedSharePointToken).token || null;
     } catch {
       return null;
     }
   }
 
-  async getSharePointStatus(): Promise<SharePointStatus> {
-    const override = await this.resolveGraphTokenOverride();
-    return this.ingestionClient.getSharePointStatus(override);
+  private async requireGraphToken(userId: string): Promise<string> {
+    const token = await this.userGraphToken(userId);
+    if (!token) throw new SharePointNotConnectedException();
+    return token;
+  }
+
+  /** The user's own connection. One who has not connected is not configured: ingestion is never asked without a token. */
+  async getSharePointStatus(userId: string): Promise<SharePointStatus> {
+    const token = await this.userGraphToken(userId);
+    if (!token) return { status: 'not_configured', expiresInSeconds: null };
+    return this.ingestionClient.getSharePointStatus(token);
   }
 
   /**
@@ -185,11 +200,11 @@ export class KbService {
       return status;
     }
     const payload: VaultedSharePointToken = { token, rotatedByUserId, rotatedAt: new Date().toISOString() };
-    await this.credentialVault.set(SHARED_OWNER_KEY, 'sharepoint_token', JSON.stringify(payload));
-    // The token is shared, so every batch that stopped for want of a valid one can go on now. Not part of the reconnect: if
-    // this fails the new token is saved all the same, and a batch can be resumed by hand.
+    await this.credentialVault.set(userOwnerKey(rotatedByUserId), 'sharepoint_token', JSON.stringify(payload));
+    // This user's batches that stopped for want of a valid token can go on now; never another user's, which run on their own token.
+    // Not part of the reconnect: if this fails the new token is saved all the same, and a batch can be resumed by hand.
     try {
-      await this.batchResumer?.resumePausedBy('sharepoint_token');
+      await this.batchResumer?.resumePausedBy('sharepoint_token', rotatedByUserId);
     } catch (error) {
       logger.warn(`Could not resume the knowledge-base batches waiting for a SharePoint token: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -202,7 +217,7 @@ export class KbService {
     docType: string | null,
     retrievalMode: string | null = null,
   ): Promise<IngestUrlResult> {
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const result = await this.ingestionClient.ingestUrl(url, userId, docType, graphToken, retrievalMode);
     await this.prisma.ingestedDocument.upsert({
       where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
@@ -297,13 +312,13 @@ export class KbService {
    * relative path, not just its own filename.
    */
   async browseFolder(url: string, userId: string, pathPrefix: string): Promise<BrowseFolderEntry[]> {
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const children = await this.ingestionClient.browseFolder(url, graphToken);
     return this.withIngestedFlag(children, userId, pathPrefix);
   }
 
   async browseChildren(driveId: string, itemId: string, userId: string, pathPrefix: string): Promise<BrowseFolderEntry[]> {
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const children = await this.ingestionClient.browseChildren(driveId, itemId, graphToken);
     return this.withIngestedFlag(children, userId, pathPrefix);
   }
@@ -473,7 +488,7 @@ export class KbService {
     // this batch was queued (a single file added meanwhile), and nothing here would stop this one landing beside them.
     const conflict = await findDriveConflict(this.prisma, userId, driveId);
     if (conflict) throw new KbDriveMismatchException(conflict);
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
     const ingestedDocumentId = await this.recordStoredDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     if (scheduleProfile) await this.profileScheduler?.schedule(userId);
@@ -502,7 +517,7 @@ export class KbService {
       const conflict = await findDriveConflict(this.prisma, userId, driveId);
       if (conflict) throw new KbDriveMismatchException(conflict);
     }
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
     // Returned so the tree row that triggered this can immediately offer a
     // remove action -- IngestUrlResult alone only carries the Graph
@@ -595,7 +610,7 @@ export class KbService {
     docType: string | null,
     recursive = false,
   ): Promise<FolderIngestUrlResult> {
-    const graphToken = await this.resolveGraphTokenOverride();
+    const graphToken = await this.requireGraphToken(userId);
     const result = await this.ingestionClient.ingestFolderUrl(url, userId, docType, recursive, graphToken);
     const toPersist = result.files.filter((f) => f.status !== 'failed' && f.driveitemId);
     // allSettled: the KB (Chroma) side already succeeded for every file in

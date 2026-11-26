@@ -1,6 +1,8 @@
 import { KbService } from '../src/modules/kb/kb.service';
 
-const fakeCredentialVault = { get: jest.fn().mockResolvedValue(null), set: jest.fn(), delete: jest.fn(), has: jest.fn() };
+// Every user in these tests has connected SharePoint with their own token (the per-user rule is tested in kb-sharepoint-per-user.spec.ts).
+const USER_TOKEN = JSON.stringify({ token: 'user-tok', rotatedByUserId: 'u', rotatedAt: '2026-01-01T00:00:00.000Z' });
+const fakeCredentialVault = { get: jest.fn().mockResolvedValue(USER_TOKEN), set: jest.fn(), delete: jest.fn(), has: jest.fn() };
 
 describe('KbService', () => {
   it('ingestUrl() calls the ingestion client and upserts an IngestedDocument, returning the ingest result', async () => {
@@ -19,7 +21,7 @@ describe('KbService', () => {
 
     const result = await service.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', null, null);
+    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', 'user-tok', null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
       where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-1' } },
       create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null, chunkCount: 3 },
@@ -67,7 +69,7 @@ describe('KbService', () => {
 
     await service.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', null, 'always_include');
 
-    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', null, null, 'always_include');
+    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', null, 'user-tok', 'always_include');
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({ retrievalMode: 'always_include' }),
@@ -183,7 +185,7 @@ describe('KbService', () => {
 
     const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false, null);
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false, 'user-tok');
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-a' } } }),
@@ -206,7 +208,7 @@ describe('KbService', () => {
 
     await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true);
 
-    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true, null);
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true, 'user-tok');
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ name: 'Sub/nested.docx' }) }),
     );
@@ -240,27 +242,27 @@ describe('KbService', () => {
     );
   });
 
-  it('getSharePointStatus() checks the vaulted override token when one has been rotated', async () => {
+  it('getSharePointStatus() checks the user own vaulted token', async () => {
     const vaulted = JSON.stringify({ token: 'vaulted-tok', rotatedByUserId: 'user-1', rotatedAt: '2026-01-01T00:00:00.000Z' });
     const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
     const credentialVault = { get: jest.fn().mockResolvedValue(vaulted) };
     const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
 
-    const result = await service.getSharePointStatus();
+    const result = await service.getSharePointStatus('user-1');
 
-    expect(credentialVault.get).toHaveBeenCalledWith('shared', 'sharepoint_token');
+    expect(credentialVault.get).toHaveBeenCalledWith('user:user-1', 'sharepoint_token');
     expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith('vaulted-tok');
     expect(result).toEqual({ status: 'valid', expiresInSeconds: 3600 });
   });
 
-  it('getSharePointStatus() falls back to no override when nothing has been rotated yet', async () => {
-    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'not_configured', expiresInSeconds: null }) };
+  it('getSharePointStatus() says not connected for a user with no token of their own, without asking ingestion', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn() };
     const credentialVault = { get: jest.fn().mockResolvedValue(null) };
     const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
 
-    await service.getSharePointStatus();
+    expect(await service.getSharePointStatus('user-1')).toEqual({ status: 'not_configured', expiresInSeconds: null });
 
-    expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith(null);
+    expect(ingestionClient.getSharePointStatus).not.toHaveBeenCalled();
   });
 
   it('reconnectSharePointToken() validates before vaulting -- an invalid token is never stored', async () => {
@@ -300,7 +302,7 @@ describe('KbService', () => {
 
     await service.reconnectSharePointToken('good-token', 'user-1');
 
-    expect(batches.resumePausedBy).toHaveBeenCalledWith('sharepoint_token');
+    expect(batches.resumePausedBy).toHaveBeenCalledWith('sharepoint_token', 'user-1');
     expect(order).toEqual(['stored', 'resumed']);
   });
 
@@ -330,11 +332,11 @@ describe('KbService', () => {
     await service.reconnectSharePointToken('good-token', 'user-1');
 
     expect(credentialVault.set).toHaveBeenCalledWith(
-      'shared',
+      'user:user-1',
       'sharepoint_token',
       expect.stringContaining('"token":"good-token"'),
     );
-    expect(credentialVault.set).toHaveBeenCalledWith('shared', 'sharepoint_token', expect.stringContaining('"rotatedByUserId":"user-1"'));
+    expect(credentialVault.set).toHaveBeenCalledWith('user:user-1', 'sharepoint_token', expect.stringContaining('"rotatedByUserId":"user-1"'));
   });
 
   describe('browseFolder() / withIngestedFlag()', () => {
@@ -458,7 +460,7 @@ describe('KbService', () => {
       const ingestionClient = { ingestDriveItem: jest.fn().mockResolvedValue(ingestResult) };
       const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }), findMany: jest.fn().mockResolvedValue([]) } };
       const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
-      const vault = { ...fakeCredentialVault, get: jest.fn().mockResolvedValue(overrides.vaultToken ?? null) };
+      const vault = { ...fakeCredentialVault, get: jest.fn().mockResolvedValue(overrides.vaultToken ?? USER_TOKEN) };
       const service = new KbService(prisma as any, ingestionClient as any, vault as any, profileScheduler as any);
       return { service, ingestionClient, prisma, profileScheduler };
     }

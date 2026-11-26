@@ -5,9 +5,11 @@ import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { Alert } from '../ui/Alert';
 import type { FileReading, ProposalDecision } from '../api/jobs';
+import { appliedCounts, isApplied } from '../utils/buildPreview';
 
 // The new-job page's "What was read from the file" (the approved mockup, 2026-11-25): while the study runs, what it does and how long it has
-// taken; then one verdict line and the decisions -- a structure change the study proposes, never applied until the user accepts it. The detail
+// taken; then one verdict line and the decisions -- a structure change the study proposes, applied unless the user undoes it before Start
+// (owner rule R4, 2026-11-26). The detail
 // lives in "About this file". Headings sit on the page, not in a card.
 
 const KIND_LABEL: Record<string, string> = {
@@ -20,10 +22,11 @@ export function kindLabel(kind: FileReading['kind']): string {
   return (kind && KIND_LABEL[kind]) || 'a document';
 }
 
-/** The verdict's counts, as one line. */
-export function verdictCounts(reading: FileReading): string {
+/** The verdict's counts, as one line: as the job will build them, with the proposals that apply. */
+export function verdictCounts(reading: FileReading, decisions: Record<string, ProposalDecision | undefined> = {}): string {
   const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
-  return [plural(reading.requirements, 'requirement'), `${reading.withIds} with IDs`, plural(reading.epics, 'Epic'), plural(reading.features, 'Feature')].join(' · ');
+  const { epics, features } = appliedCounts(reading, decisions);
+  return [plural(reading.requirements, 'requirement'), `${reading.withIds} with IDs`, plural(epics, 'Epic'), plural(features, 'Feature')].join(' · ');
 }
 
 // What the study does, in order. It is one call to the server, which reports no step of its own: the list says what happens, it does not
@@ -95,7 +98,7 @@ export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide
     );
   }
   if (!reading) return <></>;
-  const open = reading.decisions.filter((d) => decisions[d.headingId] === undefined).length;
+  const undone = reading.decisions.filter((d) => !isApplied(decisions[d.headingId])).length;
   return (
     <section aria-labelledby="file-study-heading" className="flex flex-col gap-2.5" data-testid="file-study-panel">
       <div className="flex flex-wrap items-baseline gap-3">
@@ -113,7 +116,7 @@ export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide
         <div>
           <p className="text-sm font-semibold text-ink-1">Read as {kindLabel(reading.kind)}</p>
           <p className="text-sm tabular-nums text-ink-2" data-testid="file-study-counts">
-            {verdictCounts(reading)}
+            {verdictCounts(reading, decisions)}
           </p>
         </div>
       </div>
@@ -121,19 +124,23 @@ export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide
         <div className="overflow-hidden rounded-md border border-hairline bg-surface" data-testid="file-study-decisions">
           <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-hairline bg-surface-alt px-3 py-2 text-sm">
             <span className="font-semibold text-ink-1">
-              {reading.decisions.length} decision{reading.decisions.length === 1 ? '' : 's'}
-              {open > 0 ? ` · ${open} open` : ''}
+              {reading.decisions.length} change{reading.decisions.length === 1 ? '' : 's'} to the file&apos;s structure
+              {undone > 0 ? ` · ${undone} undone` : ''}
             </span>
-            <span className="text-xs text-ink-3">Undecided ones keep the file&apos;s original.</span>
+            <span className="text-xs text-ink-3">Applied unless you undo them before Start.</span>
           </div>
           <ul>
             {reading.decisions.map((d) => {
-              const text = d.action === 'rename' ? `Rename “${d.title}” to “${d.newTitle}”` : `Remove the level “${d.title}”`;
-              const chosen = decisions[d.headingId];
+              const applied = isApplied(decisions[d.headingId]);
+              const text = !applied
+                ? `Kept “${d.title}” as the file has it`
+                : d.action === 'rename'
+                  ? `Renamed “${d.title}” to “${d.newTitle}”`
+                  : `Removed the level “${d.title}”`;
               return (
                 <li key={d.headingId} className="grid grid-cols-1 items-center gap-2 border-t border-hairline px-3 py-2 text-sm first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
-                    <span dir="auto">{text}</span>
+                    <span dir="auto">{text}</span>{' '}
                     <button
                       type="button"
                       className="ml-2 text-xs text-ink-3 underline underline-offset-2"
@@ -148,20 +155,21 @@ export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide
                       </p>
                     )}
                   </div>
-                  <div role="group" aria-label={`Decision for ${d.title}`} className="flex">
-                    {(['accept', 'keep'] as const).map((choice) => (
-                      <Button
-                        key={choice}
-                        size="sm"
-                        variant={chosen === choice ? 'primary' : 'outline'}
-                        aria-pressed={chosen === choice}
-                        className={choice === 'accept' ? 'rounded-r-none' : '-ml-px rounded-l-none'}
-                        onClick={() => onDecide(d.headingId, choice)}
-                      >
-                        {choice === 'accept' ? 'Accept' : 'Keep'}
-                      </Button>
-                    ))}
-                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="justify-self-start sm:justify-self-end"
+                    aria-label={applied ? `Undo: keep “${d.title}” as the file has it` : `Apply the change to “${d.title}” again`}
+                    onClick={() => onDecide(d.headingId, applied ? 'keep' : 'accept')}
+                  >
+                    {applied ? (
+                      <>
+                        <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Undo
+                      </>
+                    ) : (
+                      'Apply again'
+                    )}
+                  </Button>
                 </li>
               );
             })}

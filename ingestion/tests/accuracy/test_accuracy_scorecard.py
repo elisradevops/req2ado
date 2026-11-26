@@ -22,7 +22,7 @@ def built(tmp_path_factory):
 def test_baseline_keeps_every_item_right(variant, built) -> None:
     path = built[variant.name]
     tree = build_baseline_tree(dispatch_by_extension(path.name, str(path)))
-    result = score(tree, rich=variant.rich)
+    result = score(tree, rich=variant.rich, states_types=variant.states_types)
     assert not result.problems(), result.summary()
     assert result.produced == result.expected, result.summary()
 

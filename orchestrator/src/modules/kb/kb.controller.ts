@@ -32,9 +32,10 @@ function mapIngestionErrorStatus(status: number): number {
 export class KbController {
   constructor(private readonly kbService: KbService) {}
 
+  // The signed-in user's own connection: each user connects SharePoint with their own token (owner finding, 2026-11-26).
   @Get('sharepoint/status')
-  async sharePointStatus(): Promise<SharePointStatus> {
-    return this.kbService.getSharePointStatus();
+  async sharePointStatus(@CurrentUser() user: SessionUser): Promise<SharePointStatus> {
+    return this.kbService.getSharePointStatus(user.userId);
   }
 
   @Post('sharepoint/reconnect')
