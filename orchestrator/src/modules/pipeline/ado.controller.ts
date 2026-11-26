@@ -4,6 +4,10 @@ import type { AreaPathNode } from './area-path.types';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
+
+type CategoryLabels = Record<'Epic' | 'Feature' | 'Requirement', string>;
+const DEFAULT_LABELS: CategoryLabels = { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' };
 
 export interface AdoStatus {
   // `invalid`: Azure DevOps answered and refused the saved credential (401/403), so only a new PAT helps. `unreachable`: no usable answer
@@ -25,7 +29,31 @@ export class AdoController {
   constructor(
     private readonly mcpClient: McpClient,
     private readonly adoCredentialResolver: AdoCredentialResolver,
+    // Optional so a controller built without it (older tests) still serves the other routes; work-item-types then answers the fallback.
+    private readonly workItemTypeCatalogService?: WorkItemTypeCatalogService,
   ) {}
+
+  /**
+   * The project's work-item types as Azure DevOps draws them (colour and icon, by real type name) and which real names stand for Epic,
+   * Feature and Requirement, read with the user's own credential: the new-job page's tree draws the same icons the review tree does
+   * (owner finding, 2026-11-26). Best effort: no project, no credential or a failed read answers an empty catalog, and the page keeps
+   * its built-in icons.
+   */
+  @Get('work-item-types')
+  async getWorkItemTypes(
+    @CurrentUser() user: SessionUser,
+    @Query('project') project: string | undefined,
+  ): Promise<{ catalog: Record<string, WorkItemTypeCatalogEntry>; labels: CategoryLabels }> {
+    const fallback = { catalog: {}, labels: { ...DEFAULT_LABELS } };
+    if (!project || !this.workItemTypeCatalogService) return fallback;
+    const credential = await this.adoCredentialResolver.resolve(user.userId);
+    if (!credential) return fallback;
+    const [catalog, labels] = await Promise.all([
+      this.workItemTypeCatalogService.resolve(project, credential).catch(() => ({})),
+      this.workItemTypeCatalogService.resolveCategoryLabels(project, credential).catch(() => ({ ...DEFAULT_LABELS })),
+    ]);
+    return { catalog, labels };
+  }
 
   // Cheap check for the shell's connection status -- reuses discoverProjects
   // (already the lightest real ADO call this controller makes) rather than

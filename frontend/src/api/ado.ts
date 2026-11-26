@@ -25,6 +25,15 @@ export async function getAdoStatus(): Promise<AdoStatus> {
   return response.data;
 }
 
+/** The project's work-item types as Azure DevOps draws them, and the real names standing for Epic, Feature and Requirement. Best effort: the
+ * server answers an empty catalog when it cannot read them, and the badges keep their built-in icons. */
+export async function getWorkItemTypes(
+  project: string,
+): Promise<{ catalog: Record<string, WorkItemTypeCatalogEntry>; labels: Record<'Epic' | 'Feature' | 'Requirement', string> }> {
+  const response = await httpClient.get('/ado/work-item-types', { params: { project } });
+  return response.data;
+}
+
 export async function getAreaPaths(depth: number, project?: string): Promise<AreaPathNode> {
   const response = await httpClient.get<AreaPathNode>('/ado/area-paths', {
     params: { depth, ...(project ? { project } : {}) },

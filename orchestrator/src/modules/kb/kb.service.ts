@@ -3,6 +3,7 @@ import { ConflictException, HttpException, Injectable, Logger } from '@nestjs/co
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, userOwnerKey } from '../auth/credential-vault.service';
+import { kbFileStatus, type KbFileStatus } from './kb-file-types';
 import { KbDriveMismatchException, findDriveConflict } from './kb-drive';
 
 /**
@@ -77,6 +78,8 @@ export interface IngestedDocumentSummary {
   // The SharePoint library the file came from; null = recorded before this was tracked.
   driveId: string | null;
   ingestedAt: Date;
+  // current / legacy (no recorded library: the folder tree cannot find it) / unsupported (a type ingestion does not read): kb-file-types.ts.
+  status: KbFileStatus;
 }
 
 export interface FolderIngestFile {
@@ -257,10 +260,11 @@ export class KbService {
   }
 
   async listDocuments(userId?: string): Promise<IngestedDocumentSummary[]> {
-    return this.prisma.ingestedDocument.findMany({
+    const rows = await this.prisma.ingestedDocument.findMany({
       where: userId ? { userId } : {},
       orderBy: { ingestedAt: 'desc' },
     });
+    return rows.map((row) => ({ ...row, status: kbFileStatus(row) }));
   }
 
   /**
@@ -283,7 +287,7 @@ export class KbService {
     // An audit line for a destructive action: the file and a short hash of the user (for correlating events, not for identifying a person).
     logger.log(`KB document removed: user=${createHash('sha256').update(document.userId).digest('hex').slice(0, 10)} file="${document.name}" id=${id}`);
     await this.profileScheduler?.schedule(document.userId);
-    return document;
+    return { ...document, status: kbFileStatus(document) };
   }
 
   /**
@@ -299,7 +303,8 @@ export class KbService {
       return null;
     }
     await this.ingestionClient.setRetrievalMode(document.userId, document.driveItemId, retrievalMode);
-    return this.prisma.ingestedDocument.update({ where: { id }, data: { retrievalMode } });
+    const updated = await this.prisma.ingestedDocument.update({ where: { id }, data: { retrievalMode } });
+    return { ...updated, status: kbFileStatus(updated) };
   }
 
   /**

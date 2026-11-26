@@ -64,6 +64,18 @@ describe('FileStudyPanel', () => {
 });
 
 describe('BuildPreview', () => {
+  it('draws each Epic and Feature with the project real Azure DevOps icon, as the review tree does, through its real type name', () => {
+    const typeCatalog = {
+      Epic: { color: 'FF7B00', iconDataUrl: 'data:image/svg+xml;base64,RVBJQw==' },
+      'Feature Area': { color: '773B93', iconDataUrl: 'data:image/svg+xml;base64,RkVBVA==' },
+    };
+    const categoryLabels = { Epic: 'Epic', Feature: 'Feature Area', Requirement: 'User Story' } as const;
+    const { container } = render(<BuildPreview reading={reading} decisions={{}} typeCatalog={typeCatalog} categoryLabels={categoryLabels} />);
+    const sources = Array.from(container.querySelectorAll('img')).map((img) => img.getAttribute('src'));
+    expect(sources).toContain(typeCatalog.Epic.iconDataUrl);
+    expect(sources).toContain(typeCatalog['Feature Area'].iconDataUrl);
+  });
+
   it('shows the Epics and Features with every change applied, and an undone one as in the file', () => {
     const { rerender } = render(<BuildPreview reading={reading} decisions={{}} />);
     expect(screen.getByText('Vireo Television Set (VTS)')).toHaveAttribute('title', 'Renamed from Requirements');
