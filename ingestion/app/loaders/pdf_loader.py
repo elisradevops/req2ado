@@ -27,6 +27,7 @@ from app.canonical.model import (
     Table,
     TableCell,
 )
+from app.leveling.code_shape import CodeShape, learn_code_shape
 from app.leveling.customer_id import opens_a_requirement
 from app.leveling.numbering import numbering_depth, parse_numbering
 from app.loaders.figure_utils import append_figure, extract_figure_title
@@ -145,6 +146,10 @@ _BOILERPLATE_RECURRENCE_FRACTION = 0.6
 # own SimpleDocTemplate (used throughout this file's own test fixtures)
 # defaults to it -- not a value tuned to any single fixture.
 _HEADER_FOOTER_MARGIN_POINTS = 72.0
+
+# A running header or footer printed as a grid of label and value rows reaches well below the 72 pt margin; a line printed word for
+# word at the same place on most pages is page furniture when it sits within this many points of the top or bottom edge.
+_FURNITURE_BAND_POINTS = 160.0
 
 # A heading candidate's line size must exceed the document's own dominant
 # body-text size by at least this many points to be classified a heading
@@ -1159,7 +1164,7 @@ def _outline_heading_positions(path: str) -> dict[tuple[int, str], int]:
     return positions
 
 
-def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, bool]]:
+def _lines_to_paragraphs(lines: list[dict], code_shape: CodeShape | None = None) -> list[tuple[str, float, float, bool]]:
     """Merges pdfplumber's per-LINE extract_text_lines() output back into
     real paragraphs -- replaces the old, dead `text.split("\\n\\n")` (see
     this module's own load_pdf docstring for why that never actually
@@ -1197,7 +1202,8 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, boo
         small_gap = gap <= max(size, prev_size) * _PARAGRAPH_LINE_GAP_RATIO
         # A line that opens with a requirement code ("REQ-002: ...") starts a new requirement even when set tight against the
         # previous one -- otherwise consecutive requirements merged into one block (spec fixture, tight_requirements).
-        starts_requirement = opens_a_requirement(line["text"])
+        # The same for the document's own code shape, learned from its lines (code_shape.py): "abc_12 The unit ..." with no separator.
+        starts_requirement = opens_a_requirement(line["text"]) or (code_shape is not None and code_shape.opens(line["text"]))
         # The previous line ended a sentence and stopped short of the right edge (by more than a few characters): its paragraph
         # ended there, even when the next one is set with no space before it (spec fixture, tight_requirements_no_id).
         prev_line = previous_line
@@ -1240,14 +1246,22 @@ _PARAGRAPH_SHORT_LINE_EMS = 4.0
 _LINE_END_HYPHEN_PATTERN = re.compile(r"[^\W\d_]-$")
 
 
+# A line that opens a list item: a bullet glyph, or a letter or number marker ("a.", "b)", "(c)", "1.", "2)").
+_LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[\u2022\u25aa\u25e6\u2023\u2219\u00b7\u2013*]|\(?[a-z]\)|[a-z]\.|\d{1,2}[.)])\s+\S")
+
+
 def _join_lines(texts: list[str]) -> str:
-    """Joins a paragraph's lines with a space, except after a line that ends in a word broken by a hyphen ("regu-" / "lation"),
-    which is joined with no space. The hyphen itself is kept: whether it was a soft break or a real compound ("built-" / "in")
-    cannot be told from the text, and no text the document does not print is ever made up."""
+    """Joins a paragraph's lines with a space, except:
+    - after a line that ends in a word broken by a hyphen ("regu-" / "lation", "Anti-" / "Condensation"): joined with no space. The
+      hyphen itself is kept: whether it was a soft break or a real compound ("built-" / "in") cannot be told from the text, and no
+      text the document does not print is ever made up;
+    - before a line that opens a list item: joined with a line break, so the list stays a list instead of one run-on line."""
     joined = texts[0]
     for text in texts[1:]:
-        if _LINE_END_HYPHEN_PATTERN.search(joined) and text[:1].islower():
+        if _LINE_END_HYPHEN_PATTERN.search(joined) and text[:1].isalpha():
             joined += text
+        elif _LIST_ITEM_PATTERN.match(text):
+            joined += "\n" + text
         else:
             joined += " " + text
     return joined
@@ -1435,6 +1449,43 @@ def _detect_suspected_column_gap(
     return None
 
 
+_CONTINUES_PATTERN = re.compile(r"[.!?:;][\"'\u201d\u2019)\]]*\s*$")
+
+
+def _join_across_page_breaks(blocks: list[Block], code_shape: CodeShape | None = None) -> list[Block]:
+    """Joins a paragraph cut by a page break: the last paragraph of a page that stops mid-sentence (no closing punctuation) and the
+    next page's first paragraph that goes on in lower case ("... The band" / "shall be measured ...") are one paragraph. Pages are
+    read one at a time, so without this a requirement crossing a page became two items, its head without the rest. A paragraph that
+    opens with a requirement code ("abc_12 The unit ...", "REQ-002: ...") starts a requirement and is never joined."""
+    out: list[Block] = []
+    for block in blocks:
+        previous = out[-1] if out else None
+        if (
+            previous is not None
+            and previous.kind == BlockKind.PARAGRAPH
+            and block.kind == BlockKind.PARAGRAPH
+            and previous.source_ref.page is not None
+            and block.source_ref.page == (previous.source_ref.page_end or previous.source_ref.page) + 1
+            and not _CONTINUES_PATTERN.search(previous.text)
+            and block.text[:1].isalpha()
+            and not block.text[:1].isupper()  # lower case, or a script with no case (Hebrew): a sentence going on
+            and not opens_a_requirement(block.text)
+            and not (code_shape is not None and code_shape.opens(block.text))
+        ):
+            text = _join_lines([previous.text, block.text])
+            out[-1] = previous.model_copy(
+                update={
+                    "text": text,
+                    "source_ref": previous.source_ref.model_copy(
+                        update={"end_offset": previous.source_ref.start_offset + len(text), "page_end": block.source_ref.page}
+                    ),
+                }
+            )
+            continue
+        out.append(block)
+    return out
+
+
 def _normalize_digits(text: str) -> str:
     return _DIGIT_RUN_PATTERN.sub("#", text)
 
@@ -1475,6 +1526,76 @@ def _detect_boilerplate_templates(
         return {template for template, count in counts.items() if count >= 2 and count >= threshold}
 
     return _templates(pages_header_lines), _templates(pages_footer_lines)
+
+
+def _detect_positional_furniture(all_pages_lines: list[tuple[list[dict], float]]) -> set[tuple[str, int, int]]:
+    """(text, top rounded to the point) of the lines printed word for word at the same place on most pages, anywhere on the page.
+    A deep running header (a grid of label rows over value rows, about 115 pt tall) reaches below the 72 pt margin into the body
+    area, where the margin rule alone left its lower rows inside every page's text (a customer specification's twin,
+    tests/fixtures/build_twin_spec_fixture.py). The text must match exactly, digits included: body text that differs only by a page
+    number ("Body content unique to page 3.") is not furniture away from the margin. At least 3 pages are required, so a short
+    document's coincidences never count. Only lines in a deep header or footer band count (_furniture_candidate), at the same left
+    edge."""
+    from collections import Counter
+
+    counts: Counter[tuple[str, int, int]] = Counter()
+    for lines, height in all_pages_lines:
+        counts.update({_furniture_key(line) for line in lines if _furniture_candidate(line, height)})
+    threshold = len(all_pages_lines) * _BOILERPLATE_RECURRENCE_FRACTION
+    return {key for key, count in counts.items() if count >= 3 and count >= threshold}
+
+
+def _furniture_key(line: dict) -> tuple[str, int, int]:
+    return (" ".join(line["text"].split()), round(line["top"]), round(line["x0"]))
+
+
+def _furniture_candidate(line: dict, height: float) -> bool:
+    """A line that can be page furniture: in a deep header or footer band, at least a few characters long, and not a field label
+    ("Rationale:", "Verification Method:"): a form printed one requirement per page repeats its labels at the same place too."""
+    text = " ".join(line["text"].split())
+    return (
+        len(text) >= 4
+        and not text.endswith(":")
+        and (line["top"] <= _FURNITURE_BAND_POINTS or line["bottom"] >= height - _FURNITURE_BAND_POINTS)
+    )
+
+
+def _is_positional_furniture(line: dict, furniture: set[tuple[str, int, int]]) -> bool:
+    text, top, x0 = _furniture_key(line)
+    return any((text, top + dt, x0 + dx) in furniture for dt in (-1, 0, 1) for dx in (-2, -1, 0, 1, 2))
+
+
+def _is_furniture_table(bbox: tuple, page_lines: list[dict], furniture: set[tuple[str, int, int]]) -> bool:
+    x0, top, x1, bottom = bbox
+    # The lines that cross the table's area: a header row is read as one line wider than the part of the grid the table covers.
+    inside = [
+        line
+        for line in page_lines
+        if line["top"] >= top - 1 and line["bottom"] <= bottom + 1 and line["x0"] < x1 and line["x1"] > x0
+    ]
+    return bool(inside) and sum(_is_positional_furniture(line, furniture) for line in inside) * 2 > len(inside)
+
+
+def _recurring_rotated_text_pages(pages: list) -> set[int]:
+    """Indexes of the pages whose rotated text (characters not set upright, such as a notice printed up the left margin) recurs,
+    digit-normalized, on most pages: page furniture, removed like a running header. Read as ordinary lines, such a notice came out
+    as reversed word fragments inside items. Rotated text that does not recur (a rotated table heading) is kept."""
+    from collections import Counter
+
+    signatures: list[str] = []
+    for page in pages:
+        rotated = sorted(
+            (c for c in page.chars if not c.get("upright", True)), key=lambda c: (round(c["x0"]), round(c["top"]))
+        )
+        signatures.append(_normalize_digits("".join(c["text"] for c in rotated)) if rotated else "")
+    counts = Counter(s for s in signatures if s)
+    threshold = len(pages) * _BOILERPLATE_RECURRENCE_FRACTION
+    recurring = {s for s, count in counts.items() if count >= 2 and count >= threshold}
+    return {i for i, s in enumerate(signatures) if s in recurring}
+
+
+def _without_rotated_text(page):
+    return page.filter(lambda obj: obj.get("object_type") != "char" or obj.get("upright", True))
 
 
 def _detect_boilerplate_images(
@@ -1676,14 +1797,20 @@ def load_pdf(
         # docstring for why this must be a first pass, not decided
         # page-by-page (a header/footer's own defining property is that it
         # recurs ACROSS pages -- no single page's content can prove that).
-        all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pdf.pages]
+        rotated_furniture = _recurring_rotated_text_pages(pdf.pages)
+        pages = [_without_rotated_text(p) if i in rotated_furniture else p for i, p in enumerate(pdf.pages)]
+        all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pages]
+        positional_furniture = _detect_positional_furniture(
+            [(lines, page.height) for page, lines in zip(pages, all_pages_lines)]
+        )
+        code_shape = learn_code_shape(line["text"] for lines in all_pages_lines for line in lines)
         pages_header_lines = [
             [line["text"] for line in lines if line["top"] <= _HEADER_FOOTER_MARGIN_POINTS]
             for lines in all_pages_lines
         ]
         pages_footer_lines = [
             [line["text"] for line in lines if line["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS]
-            for page, lines in zip(pdf.pages, all_pages_lines)
+            for page, lines in zip(pages, all_pages_lines)
         ]
         header_templates, footer_templates = _detect_boilerplate_templates(
             pages_header_lines, pages_footer_lines
@@ -1732,7 +1859,7 @@ def load_pdf(
         body_size = _dominant_body_size(all_pages_lines)
         outline_positions = _outline_heading_positions(path)
 
-        for page_number, page in enumerate(pdf.pages, start=1):
+        for page_number, page in enumerate(pages, start=1):
             # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
             # once -- (a) filtering table-region lines out before merging
             # back into paragraphs stops table cell text ALSO becoming a
@@ -1804,9 +1931,12 @@ def load_pdf(
                     if _table_has_chopped_word(candidate.extract()):
                         continue
                     found_tables.append(candidate)
+            page_lines = all_pages_lines[page_number - 1]
+            # A table detected over the running header's grid is page furniture too: most of its lines are printed at the same place on
+            # most pages (_detect_positional_furniture). Dropped, so the header never reaches an item as a table.
+            found_tables = [t for t in found_tables if not _is_furniture_table(t.bbox, page_lines, positional_furniture)]
             table_bboxes = [t.bbox for t in found_tables]
 
-            page_lines = all_pages_lines[page_number - 1]
             if table_bboxes:
                 page_lines = [
                     line
@@ -1851,9 +1981,10 @@ def load_pdf(
                     line["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS
                     and _normalize_digits(line["text"]) in footer_templates
                 )
+                and not _is_positional_furniture(line, positional_furniture)
             ]
 
-            paragraphs_with_meta = _lines_to_paragraphs(filtered_lines)
+            paragraphs_with_meta = _lines_to_paragraphs(filtered_lines, code_shape)
 
             page_tables: list[Table] = []
             for found_table in found_tables:
@@ -2336,6 +2467,8 @@ def load_pdf(
         tables = _merge_continued_tables(tables, table_xs_by_id, table_bbox_by_id, page_height)
     except Exception:  # noqa: BLE001 -- a continuation-merge failure degrades to unmerged per-page tables, never aborts the document
         pass
+
+    blocks = _join_across_page_breaks(blocks, code_shape)
 
     # Phase 4 (Task 8): AcroForm fields, fail-loud NOTE marker
     # A filled AcroForm field's value never appears in pdfplumber's text extraction

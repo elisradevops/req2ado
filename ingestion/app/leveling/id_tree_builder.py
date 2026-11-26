@@ -31,6 +31,7 @@ from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.customer_id import extract_customer_requirement_code
+from app.leveling.document_grammar import invents_obligation
 
 # Previously a second, independent copy of llm_leveling.py's own
 # _significant_words/_grounding_score with an ASCII-only word pattern --
@@ -239,6 +240,10 @@ def synthesis_updates(entry: dict, original_text: str, node_type: WorkItemType) 
     `title_tag_updates`."""
     updates: dict = {}
     raw_text = entry.get("text")
+    # A rewrite that turns a statement with no obligation into a requirement ("None." -> "The system shall ...") is invented: the source
+    # wording stays (app.leveling.document_grammar.invents_obligation).
+    if isinstance(raw_text, str) and invents_obligation(raw_text, original_text):
+        raw_text = None
     if isinstance(raw_text, str) and raw_text.strip():
         description = raw_text.strip()
         updates["description"] = description

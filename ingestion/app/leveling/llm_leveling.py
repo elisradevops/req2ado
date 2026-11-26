@@ -37,10 +37,12 @@ from app.leveling.conflict_detection import (
 )
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.content_authoring import ContentAuthoringClient, author_fixed_tree
+from app.leveling.document_grammar import learn_grammar
 from app.leveling.document_layout import (
     find_front_matter,
     learned_front_matter,
     left_out_warning,
+    with_left_out_sections,
     without_front_matter,
 )
 from app.leveling.document_study import DocumentStudyClient
@@ -798,9 +800,14 @@ def _detect_deterministic_subtrees(
         claimed_table_ids.add(table.id)
         subtree_index += 1
 
-    heading_rows, heading_warnings, heading_block_ids = rows_from_id_headings(doc.blocks)
-    if not heading_rows:
-        heading_rows, heading_warnings, heading_block_ids = rows_from_heading_structure(doc.blocks)
+    # A document that states its own grammar (a requirement-code shape and numbered sections, app.leveling.document_grammar) is built by
+    # it, in the residual (adopt_baseline_structure), exactly as BASELINE builds it: no heading detector claims its headings.
+    if learn_grammar(doc, rulebook) is not None:
+        heading_rows, heading_warnings, heading_block_ids = [], [], set()
+    else:
+        heading_rows, heading_warnings, heading_block_ids = rows_from_id_headings(doc.blocks)
+        if not heading_rows:
+            heading_rows, heading_warnings, heading_block_ids = rows_from_heading_structure(doc.blocks)
 
     claimed_heading_block_ids: set[str] = set()
     if heading_rows:
@@ -1588,7 +1595,15 @@ def build_survey_tree(
     if handle is not None:
         handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
     tree.warnings.extend(prestudy_warnings)
-    left_out = left_out_warning(front)
+    # Sections the document grammar left out inside the body (a revision history in chapter 1, a traceability listing at the end) join
+    # the front matter left out here: what was left out is reported once.
+    inner = [w for w in tree.warnings if w.kind == WarningKind.FRONT_MATTER_LEFT_OUT]
+    tree.warnings = [w for w in tree.warnings if w.kind != WarningKind.FRONT_MATTER_LEFT_OUT]
+    front = with_left_out_sections(
+        front,
+        [(p["text"], p.get("page"), p.get("pageEnd", p.get("page"))) for w in inner for p in (w.detail or {}).get("parts", [])],
+    )
+    left_out = left_out_warning(front) if front is not None else None
     if left_out is not None:
         tree.warnings.append(left_out)
     if rulebook is not None and rulebook.tables:

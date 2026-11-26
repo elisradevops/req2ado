@@ -26,6 +26,7 @@ from app.job_cancel import JobCancelled
 from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.criteria_grounding import given_values, ungrounded
 from app.leveling.description_text import html_to_model_text, split_tables
+from app.leveling.document_grammar import invents_obligation
 from app.leveling.id_tree_builder import synthesis_updates
 from app.leveling.live_context import current_stage_counter
 from app.survey.content_filter import kb_blocked_warning, without_kb_when_blocked
@@ -66,7 +67,7 @@ def _is_grouping(node: WorkItemNode) -> bool:
 
 
 def _authorable(node: WorkItemNode) -> bool:
-    if _is_grouping(node) or split_tables(node.description)[1]:
+    if _is_grouping(node) or node.verbatim or split_tables(node.description)[1]:
         return False
     if node.type == WorkItemType.REQUIREMENT:
         return bool(node.description.strip())
@@ -135,7 +136,11 @@ def value_problems(
 ) -> list[str]:
     """The values `rewrite` adds that `grounding_texts` do not state, then (when `keep`) the values of `source` it no longer states, as
     labels ("added number:7", "dropped unit:v"). Empty when the rewrite may be kept."""
+    grounding_texts = list(grounding_texts)
     added = [f"added {value}" for value in ungrounded(rewrite, given_values(grounding_texts))]
+    # An obligation the source does not state is invented: "The service life is 12 years." never becomes "... shall be 12 years.".
+    if invents_obligation(rewrite, source):
+        added.append("added obligation")
     dropped = (
         [f"dropped {value}" for value in ungrounded(source, given_values([rewrite]))]
         if keep

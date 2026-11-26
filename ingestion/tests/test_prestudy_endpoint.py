@@ -566,8 +566,9 @@ def test_the_breakdown_is_not_part_of_how_a_file_is_studied(hebrew_doc) -> None:
     from app.study import model_rules
 
     source = inspect.getsource(model_rules.prestudy_version)
-    # "4": the pre-study also learns front matter (a deliberate re-study of stored model rulebooks).
-    assert "details" not in source and model_rules._CODE_PASS_VERSION == "4"
+    # "4": the pre-study also learns front matter; "5": it also learns the document grammar (each a deliberate re-study of stored model
+    # rulebooks).
+    assert "details" not in source and model_rules._CODE_PASS_VERSION == "5"
 
 
 def test_a_reading_for_a_job_names_the_step_on_the_jobs_live_screen(hebrew_doc) -> None:

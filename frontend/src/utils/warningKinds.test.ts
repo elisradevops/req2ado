@@ -228,7 +228,8 @@ describe('document_study_incomplete', () => {
     expect(entry).toBeDefined();
     expect(entry.title).toMatch(/study/i);
     expect(entry.short).toMatch(/not read|did not read|unread/i);
-    expect(entry.means).toMatch(/nothing is missing from the tree|tree itself/i);
+    expect(entry.means).toMatch(/built from the document itself/i);
+    expect(entry.means).not.toMatch(/nothing is missing/i); // a claim no step checks is never stated
     expect(entry.group).toBe('info');
   });
 });

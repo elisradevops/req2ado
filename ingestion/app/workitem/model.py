@@ -204,6 +204,9 @@ class WorkItemNode(BaseModel):
     # serialized, so no contract change): whatever must not depend on the model's wording, such as grouping root
     # sections, reads this instead of `title`. None for nodes the model itself created.
     source_title: str | None = Field(default=None, exclude=True)
+    # Built by the document's own grammar (leveling/document_grammar.py): its text is the document's, word for word, and no model pass
+    # rewrites it. In-process only, like source_title.
+    verbatim: bool = Field(default=False, exclude=True)
     description: str
     # Per-Requirement, document-derived attribute -- the requirement's own
     # source reference number (e.g. "1.1.2.2"), populated ONLY for a
@@ -453,6 +456,9 @@ class WarningKind(StrEnum):
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
     TRACE_LINKS_PARTIAL = "trace_links_partial"
     ITEMS_LOST = "items_lost"
+    # Requirements the document numbers with its own code (leveling/code_shape.py) that are in no Requirement item: computed by comparing
+    # the tree with the document, never assumed (leveling/document_grammar.requirement_coverage).
+    REQUIREMENTS_NOT_ITEMS = "requirements_not_items"
     HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
@@ -610,6 +616,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.TRACE_LINKS_PARTIAL: WarningSeverity.NEEDS_REVIEW,
     WarningKind.ITEMS_LOST: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.REQUIREMENTS_NOT_ITEMS: WarningSeverity.NEEDS_REVIEW,
     WarningKind.HEADING_ID_OFFSET_MISMATCH: WarningSeverity.NEEDS_REVIEW,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,

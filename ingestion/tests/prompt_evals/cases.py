@@ -1266,3 +1266,103 @@ CASES += [
         frozenset({"front_matter"}),
     ),
 ]
+
+
+# --- study_file_rules_document v3: the document's grammar (requirement code, context, empty and back-matter sections) ----------------
+# A twin of a real specification (tests/fixtures/build_twin_spec_fixture.py): lowercase codes with no separator, uppercase parent codes
+# that only appear in trace lists, uppercase product tokens inside requirement text, "None." sections and a traceability listing.
+
+
+def _grammar_sample() -> dict:
+    rows = [
+        (None, "1", "INTRODUCTION", {"coded": 0, "tables": 0, "obligation": False}),
+        (None, "1.1", "IDENTIFICATION", {"coded": 0, "tables": 0, "obligation": False}),
+        (None, "1.2", "DOCUMENT OVERVIEW", {"coded": 0, "tables": 0, "obligation": False}),
+        (None, "1.3", "REVISION HISTORY", {"coded": 0, "tables": 1, "obligation": False}),
+        (None, "2", "REQUIREMENTS", {"coded": 0, "tables": 0, "obligation": False}),
+        (None, "2.1", "GENERAL", {"coded": 0, "tables": 0, "obligation": False}),
+        (None, "2.1.1", "Product family", {"coded": 1, "tables": 0, "obligation": True}),
+        (None, "2.2", "Mass", {"coded": 2, "tables": 0, "obligation": True}),
+        (None, "2.3", "Interchangeability", {"coded": 0, "tables": 0, "obligation": False, "marker": "None."}),
+        (None, "2.4", "OPERATOR DISPLAY (HMI_PANEL)", {"coded": 3, "tables": 0, "obligation": True}),
+        (None, "2.5", "RELIABILITY", {"coded": 5, "tables": 0, "obligation": True}),
+        (None, "3", "REQUIREMENT IDENTITIES", {"coded": 0, "tables": 4, "obligation": False}),
+    ]
+    headings = [
+        {"i": i, "level": number.count(".") + 1, "depth": number.count("."), "number": number, "text": text, **extra}
+        for i, (_, number, text, extra) in enumerate(rows)
+    ]
+    return {
+        "headingCount": len(headings),
+        "headings": headings,
+        "leadingPatterns": [],
+        "levelCounts": {},
+        "depthCounts": {},
+        "codeCandidates": [
+            {
+                "shape": "a_9",
+                "count": 117,
+                "examples": ["dsp_3", "dsp_6", "dsp_9", "enc_1", "enc_2", "gen_2"],
+                "sample": "dsp_9 The front bezel shall be finished in KLX4410 green.",
+            },
+            {"shape": "A_9", "count": 2, "examples": ["GCS_9"], "sample": "GCS_9 SYS_45 and the remaining parent references of it"},
+        ],
+    }
+
+
+_GRAMMAR_EXAMPLES = {"dsp_3", "dsp_6", "dsp_9", "enc_1", "enc_2", "gen_2"}
+
+
+def _check_grammar(result: object) -> Checks:
+    ok = isinstance(result, dict)
+    codes = result.get("requirement_codes") if ok else None
+    context = set(result.get("context_headings") or []) if ok else set()
+    back = set(result.get("back_matter_headings") or []) if ok else set()
+    coded = {6, 7, 9, 10}
+    return {
+        "shape": (ok and isinstance(codes, list), "no requirement_codes list"),
+        "codes_copied": (
+            isinstance(codes, list) and len(codes) >= 3 and set(codes) <= _GRAMMAR_EXAMPLES,
+            "requirement codes not copied from the a_9 examples (or a parent code chosen)",
+        ),
+        "context": (1 in context and not context & coded, "identification not context, or a coded section named context"),
+        "back_matter": (11 in back and not back & coded, "the identity listing not back matter"),
+        "empty": (
+            ok and result.get("empty_sections") in ("empty_feature", "leave_out"),
+            "no answer for the None. section",
+        ),
+    }
+
+
+def _grammar_reply(codes: list[str], context: list[int], back: list[int], empty: str = "empty_feature") -> str:
+    return _j(
+        {
+            "type_source": "none",
+            "labels": [],
+            "depth_types": [],
+            "evidence_headings": [6, 7, 8],
+            "front_matter_headings": [{"i": 3, "role": "revision_history"}],
+            "requirement_codes": codes,
+            "leaf_convention": "feature_and_requirement",
+            "empty_sections": empty,
+            "context_headings": context,
+            "back_matter_headings": back,
+        }
+    )
+
+
+CASES += [
+    Case(
+        "study_file_rules_document",
+        "grammar_of_a_coded_specification",
+        lambda c: c.study_file_rules_document(_grammar_sample()),
+        _check_grammar,
+        [_grammar_reply(["dsp_3", "enc_1", "gen_2"], [1, 2], [11])],
+        [
+            _grammar_reply(["GCS_9"], [1, 2], [11]),
+            _grammar_reply(["dsp_3", "enc_1", "gen_2"], [1, 9], [11]),
+            _grammar_reply(["dsp_3", "enc_1", "gen_2"], [1], [], "unknown"),
+        ],
+        frozenset({"grammar"}),
+    ),
+]
