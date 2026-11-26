@@ -7,7 +7,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from app.dedup.embedding_blend import blend_embeddings
+from app.dedup.embedding_blend import embed_titles_and_texts
 from app.dedup.vector_store import ChromaVectorStore
 
 logger = logging.getLogger(__name__)
@@ -151,9 +151,9 @@ def check_for_duplicates(
     which means the judge never ran at all) and the failure is logged, and
     the similarity and matched item are still reported."""
     started = time.monotonic()
-    title_embedding, description_embedding = embed_client.embed([title, text], user_id=user_id)
+    # An item with no text (an Epic or Feature the file gives none) is embedded by its title: an empty text is refused by /llm/embed.
+    [embedding] = embed_titles_and_texts(lambda texts: embed_client.embed(texts, user_id=user_id), [(title, text)])
     embedded = time.monotonic()
-    embedding = blend_embeddings(title_embedding, description_embedding)
     matches = vector_store.query_nearest_many(embedding, area_path, scope=scope, type_category=type_category, top_k=top_k)
     if timings is not None:
         timings["embed_ms"] = round((embedded - started) * 1000)

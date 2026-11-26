@@ -1054,3 +1054,20 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
     });
   });
 });
+
+describe('IngestionHttpClient: model-backed item calls', () => {
+  it('send scoring, score explanation, rewrite comparison and item enhancement through the long-running dispatcher (no 300 s cut)', async () => {
+    const seen: Record<string, unknown> = {};
+    global.fetch = jest.fn(async (url: string, init?: { dispatcher?: unknown }) => {
+      seen[new URL(url).pathname] = init?.dispatcher;
+      throw new Error('stop here: only the request is checked');
+    }) as unknown as typeof fetch;
+    const client = new IngestionHttpClient('http://ingestion.internal') as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    for (const call of ['scoreItem', 'explainScores', 'compareRewrite', 'enhanceItems']) {
+      await client[call]({}, {}, {}).catch(() => undefined);
+    }
+    for (const path of ['/score-item', '/score-explain', '/rewrite/compare', '/enhance-items']) {
+      expect(seen[path]).toBeDefined();
+    }
+  });
+});

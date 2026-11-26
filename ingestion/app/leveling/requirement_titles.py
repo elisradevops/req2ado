@@ -95,10 +95,23 @@ def write_requirement_titles(
                 )
             )
             continue
+        chunk_written = 0
         for node in chunk:
             entry = outcome.value.get(node.local_id)
             title = checked_title(entry.get("title") if isinstance(entry, dict) else None, statement_of(node))
             if title is not None:
                 node.title = title
-                written += 1
+                chunk_written += 1
+        written += chunk_written
+        # An answer that gave not one usable title is a failure of the call, not a few refusals: say so, as for a call that failed outright.
+        if chunk_written == 0:
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    f"Short titles could not be written for {len(chunk)} requirement(s): the model's answer had no title grounded in their "
+                    "text. They keep the title taken from their text.",
+                    node_ids=[n.local_id for n in chunk],
+                    detail={"pass": "requirement_titles"},
+                )
+            )
     return written

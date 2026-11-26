@@ -200,3 +200,16 @@ def test_a_file_whose_requirements_carry_their_own_titles_keeps_them(tv_doc) -> 
     titles = _OneTitle()
     nodes = _level(doc, "user-1", titles)
     assert not titles.users and nodes["tun_1"]["title"].startswith("The terrestrial tuner shall receive")
+
+
+def test_an_answer_with_no_usable_title_keeps_the_extracted_titles_and_says_so() -> None:
+    """Seen live (2026-11-26): a local model answered every requirement, but none of the answers could be used. The job kept the long
+    titles without a word to the reviewer; it now says so, as a failed call does."""
+    nodes = _requirements()
+    titles = [n.title for n in nodes]
+    warnings: list = []
+    client = _Titles({"r1": "Fast digital tuner", "r2": "Lightweight ergonomic remote"})  # neither grounded in its requirement
+    assert write_requirement_titles(nodes, client, warnings) == 0
+    assert [n.title for n in nodes] == titles
+    assert [w.kind.value for w in warnings] == ["enhancement_call_failed"]
+    assert warnings[0].node_ids == ["r1", "r2"]

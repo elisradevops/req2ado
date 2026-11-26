@@ -31,7 +31,7 @@ from app.chat.rewrite_check import check_rewrite
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
-from app.dedup.embedding_blend import blend_embeddings
+from app.dedup.embedding_blend import embed_titles_and_texts
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
@@ -3427,8 +3427,8 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    title_embedding, description_embedding = _embed_for_dedup([body.title, body.text], body.user_id)
-    embedding = blend_embeddings(title_embedding, description_embedding)
+    # An item with no text is embedded by its title (embed_titles_and_texts): an empty text is refused by /llm/embed.
+    [embedding] = embed_titles_and_texts(lambda texts: _embed_for_dedup(texts, body.user_id), [(body.title, body.text)])
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
     # numeric-literal guard (X7) against the actual matched text.
@@ -3505,25 +3505,15 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     for start in range(0, n, chunk_size):
         chunk_items = body.items[start : start + chunk_size]
         try:
-            embeddings = _embed_for_dedup(
-                [item.title for item in chunk_items] + [item.text for item in chunk_items],
-                body.user_id,
+            # Items with no text are embedded by their title (embed_titles_and_texts): an empty text is refused by /llm/embed.
+            blended_embeddings = embed_titles_and_texts(
+                lambda texts: _embed_for_dedup(texts, body.user_id), [(item.title, item.text) for item in chunk_items]
             )
         except HTTPException as exc:
             raise HTTPException(
                 status_code=exc.status_code,
                 detail=f"{str(exc.detail)} (indexed {start} of {n} items before the failure)",
             ) from exc
-        title_embeddings, description_embeddings = (
-            embeddings[: len(chunk_items)],
-            embeddings[len(chunk_items) :],
-        )
-        blended_embeddings = [
-            blend_embeddings(title_embedding, description_embedding)
-            for title_embedding, description_embedding in zip(
-                title_embeddings, description_embeddings
-            )
-        ]
 
         # Group by area_path before calling vector_store.upsert_many -- one
         # Chroma round trip per distinct area path instead of one per item
