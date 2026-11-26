@@ -432,6 +432,45 @@
   }
 }
 
+/* The drop box's file fan (DESIGN.md §8, "Drop box fan"): four format tiles, fanned. They deal in once as one movement (Entrance,
+   fanDeal), open a little while the drop box is hovered or focused, and wide while a file is dragged over it (State-change, transform,
+   --duration-base). Nothing moves while idle. Under reduced motion the fan rests fanned and nothing moves (below). */
+.file-fan {
+  position: relative;
+  display: block;
+  width: 12.5rem;
+  height: 4.5rem;
+}
+.file-fan > * {
+  position: absolute;
+  left: calc(50% - 1.5rem);
+  top: 0.625rem;
+  transform: translateX(var(--fan-x)) rotate(var(--fan-r));
+  transition: transform var(--duration-base) var(--ease-out);
+  animation: fanDeal var(--duration-medium) var(--ease-out) backwards;
+}
+.file-fan > :nth-child(1) { --fan-x: -3.375rem; --fan-r: -12deg; }
+.file-fan > :nth-child(2) { --fan-x: -1.125rem; --fan-r: -4deg; }
+.file-fan > :nth-child(3) { --fan-x: 1.125rem; --fan-r: 4deg; }
+.file-fan > :nth-child(4) { --fan-x: 3.375rem; --fan-r: 12deg; }
+.group:hover .file-fan > *,
+.group:focus-visible .file-fan > * {
+  transform: translateX(calc(var(--fan-x) * 1.12)) translateY(-3px) rotate(calc(var(--fan-r) * 1.15));
+}
+.group[data-dragging] .file-legend-tile {
+  background-color: var(--color-surface);
+  border-color: var(--color-accent-soft-border);
+}
+.file-fan[data-open] > * {
+  transform: translateX(calc(var(--fan-x) * 1.35)) translateY(-6px) rotate(calc(var(--fan-r) * 1.4));
+}
+@keyframes fanDeal {
+  from {
+    opacity: 0;
+    transform: translateY(8px) rotate(0deg);
+  }
+}
+
 /* Applies the Attention motion role above. DESIGN.md §15.7: this class may
    only ever land on the confirm-to-ADO CTA, once its acknowledgement
    checkbox is ticked (see ui/ConfirmDialog.tsx). */
@@ -584,6 +623,12 @@
        -- a -translate-y-px hover would still apply instantly. Route hover
        lift through this class so "no motion" means no displacement, not
        instant displacement (DESIGN.md §8, reduced-motion clause 1). */
+    /* The drop box fan rests fanned: no deal-in, no opening on hover, focus or drag (its colour change still shows the drag). */
+    .file-fan > * {
+      animation: none !important;
+      transform: translateX(var(--fan-x)) rotate(var(--fan-r)) !important;
+    }
+
     .liftable {
       transform: none !important;
       /* Tailwind 4 emits the lift as the `translate` property, which `transform: none` does not cancel */

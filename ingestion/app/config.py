@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,11 +58,8 @@ class Settings(BaseSettings):
     # reachable and had no protection if called directly. Mirrors
     # orchestrator's MAX_UPLOAD_SIZE_MB (env var, same name, same default).
     max_upload_size_mb: int = 25
-    # KB/SharePoint ingestion (app/kb/graph_client.py) — SHAREPOINT_TOKEN is
-    # the primary name; GRAPH_TOKEN is accepted as an alias for the same value.
-    sharepoint_token: str | None = Field(
-        default=None, validation_alias=AliasChoices("SHAREPOINT_TOKEN", "GRAPH_TOKEN")
-    )
+    # No SharePoint token here: each user's own comes with every request from the orchestrator (owner finding, 2026-11-26). The former
+    # SHAREPOINT_TOKEN / GRAPH_TOKEN variables are ignored.
     graph_base_url: str = "https://graph.microsoft.com/v1.0"
     redis_url: str = "redis://localhost:6379"
     # Middle rung of the SURVEY call ladder (orchestrator -> ingestion ->

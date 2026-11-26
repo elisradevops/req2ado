@@ -272,7 +272,7 @@ export function KbFileList({
                         {entry.isFolder ? (
                           <Folder className="h-3.5 w-3.5 flex-none text-ink-3" />
                         ) : (
-                          <FileTypeIcon extension={extensionOf(entry.name)} className="h-4 w-4 rounded-sm" />
+                          <FileTypeIcon extension={extensionOf(entry.name)} className="h-5 w-5" />
                         )}
                         <span className="min-w-0 truncate">{entry.name}</span>
                         {entry.isFolder && <ChevronRight className="h-3.5 w-3.5 flex-none text-ink-3" />}

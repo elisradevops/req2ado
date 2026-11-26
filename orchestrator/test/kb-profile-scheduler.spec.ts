@@ -109,7 +109,8 @@ describe('IngestionHttpClient.buildKbProfile', () => {
 });
 
 describe('KbService schedules a profile rebuild after a change of the knowledge base', () => {
-  const vault = { get: jest.fn(async () => null) } as never;
+  // u1 has connected SharePoint with their own token.
+  const vault = { get: jest.fn(async () => JSON.stringify({ token: 'u1-tok', rotatedByUserId: 'u1', rotatedAt: 'now' })) } as never;
 
   it('after an ingest and after a delete, never for another user', async () => {
     const scheduler = { schedule: jest.fn(async () => undefined) };

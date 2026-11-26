@@ -1478,11 +1478,8 @@ class KbIngestUrlRequest(BaseModel):
     # larger blast radius than one deliberately-chosen standards doc, so
     # this stays scoped to the single-document upload path for now.
     retrieval_mode: str | None = None
-    # Optional per-request override for the shared SharePoint token -- set
-    # by the orchestrator when a user has rotated the token via
-    # POST /kb/sharepoint/reconnect (stored in its credential vault, not
-    # this process's env). Falls back to settings.sharepoint_token when
-    # absent, same as before this field existed.
+    # The acting user's own SharePoint token, from the orchestrator's credential vault. Required for every SharePoint call: there is no
+    # server-wide token (_user_graph_token).
     graph_token: str | None = None
 
 
@@ -3697,6 +3694,15 @@ async def kb_get_profile(user_id: str) -> dict:
     return _profile_response(profile)
 
 
+def _user_graph_token(body: BaseModel) -> str:
+    """The acting user's own SharePoint token, which the orchestrator sends with every SharePoint request. There is no server-wide token
+    to fall back to (owner finding, 2026-11-26: one shared token served every user): without the user's own, the request is refused."""
+    token = getattr(body, "graph_token", None)
+    if not token:
+        raise HTTPException(status_code=424, detail="SharePoint is not connected for this user.")
+    return token
+
+
 @app.post("/kb/ingest-url", response_model=IngestResult)
 async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # Token from env (SHAREPOINT_TOKEN / GRAPH_TOKEN). GraphClient raises
@@ -3704,9 +3710,7 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # makes synchronous httpx calls; run in the threadpool like /level and
     # the old /kb/sync so it never blocks the single-worker event loop.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_document_from_url,
             body.url,
@@ -3753,9 +3757,7 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
     # Listing the folder itself (validate_share_url, list_folder_children)
     # can still fail with ValueError/GraphApiError, mapped the same way.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_folder_from_url,
             body.url,
@@ -3799,9 +3801,7 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
     # own sharing link. Same token/threadpool/error-mapping reasoning as
     # every other Graph-backed route here.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_folder_child,
             body.name,
@@ -3841,9 +3841,7 @@ async def kb_ingest_drive_item(body: KbIngestDriveItemRequest) -> IngestResult:
     # ingests them later, when a URL it was handed at browse time may have expired, so the file is looked up and downloaded
     # here, now. Same token/threadpool/error-mapping reasoning as /kb/ingest-item above.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(
             ingest_drive_item,
             body.drive_id,
@@ -3981,9 +3979,7 @@ async def kb_browse_folder(body: KbBrowseFolderRequest) -> list[FolderChildSumma
     # ingest. Same token/error-mapping/threadpool reasoning as every other
     # Graph-backed route here.
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(browse_shared_folder, body.url, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3998,9 +3994,7 @@ async def kb_browse_children(body: KbBrowseChildrenRequest) -> list[FolderChildS
     # expansion (addressed by drive_id + item_id, not a share URL -- see
     # browse_service.browse_subfolder's docstring).
     try:
-        graph_client = GraphClient(
-            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
-        )
+        graph_client = GraphClient(_user_graph_token(body), settings.graph_base_url)
         return await run_in_threadpool(browse_subfolder, body.drive_id, body.item_id, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4016,7 +4010,7 @@ async def kb_sharepoint_status(body: KbSharePointStatusRequest) -> KbSharePointS
     # committing it to the vault (see /kb/sharepoint/reconnect there) as well
     # as the currently-effective one after rotation; falls back to this
     # process's own env var exactly like every other Graph-backed route.
-    token = body.graph_token or settings.sharepoint_token
+    token = body.graph_token
     if not token:
         return KbSharePointStatusResult(status="not_configured")
     expires_in_seconds = decode_jwt_expiry_seconds(token)

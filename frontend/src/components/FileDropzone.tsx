@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { Upload, CircleCheck, TriangleAlert } from 'lucide-react';
+import { CircleCheck, TriangleAlert } from 'lucide-react';
 import { cn } from '../lib/cn';
-import { FileTypeIcon } from './FileTypeIcon';
+import { DropBoxPrompt } from './DropBoxPrompt';
 import { Spinner } from '../ui/Spinner';
 import { JOB_FILE_EXTENSIONS, JOB_FILE_TYPE_LABELS } from '../utils/extension';
 
@@ -61,8 +61,9 @@ export function FileDropzone({
         setIsDragging(false);
         handleFiles(event.dataTransfer.files);
       }}
+      data-dragging={isDragging || undefined}
       className={cn(
-        'flex flex-1 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
+        'group flex flex-1 cursor-pointer flex-col items-center justify-center gap-2 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
         isDragging && 'border-accent bg-accent-soft',
         // `.liftable` (§6/§7, Surface category -- this component is named
         // explicitly in its table) supplies the shared hover lift/shadow;
@@ -96,16 +97,7 @@ export function FileDropzone({
           <span className="text-xs text-ink-3">Drop it again, or try a different file</span>
         </>
       ) : (
-        <>
-          <Upload className="h-6 w-6 text-ink-3" />
-          <span className="text-sm font-semibold">Drop a requirements document here</span>
-          <span className="text-xs text-ink-3">or click to browse — up to 40 MB</span>
-          <span className="mt-1 flex items-center gap-2.5">
-            {SUPPORTED_TYPES.map((extension) => (
-              <FileTypeIcon key={extension} extension={extension} className="h-7 w-7" />
-            ))}
-          </span>
-        </>
+        <DropBoxPrompt title="Drop your requirements document" dragging={isDragging} choose="Choose a file" hint="up to 40 MB" extensions={SUPPORTED_TYPES} />
       )}
       <input
         ref={inputRef}

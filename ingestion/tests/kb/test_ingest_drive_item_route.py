@@ -2,7 +2,6 @@
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.config import settings
 from app.kb.graph_client import GraphApiError, GraphClient
 from app.kb.ingest_service import IngestResult
 
@@ -13,6 +12,8 @@ BODY = {
     "item_id": "item-1",
     "user_id": "Project\\Area1",
     "retrieval_mode": "always_include",
+    # The orchestrator always sends the acting user's own token (owner finding, 2026-11-26: no server-wide SharePoint identity).
+    "graph_token": "user-token",
 }
 
 
@@ -29,7 +30,6 @@ def _result() -> IngestResult:
 
 
 def test_ingest_drive_item_route_forwards_the_request_to_the_service(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "test-token")
     captured = {}
 
     def fake_ingest_drive_item(
@@ -53,8 +53,7 @@ def test_ingest_drive_item_route_forwards_the_request_to_the_service(monkeypatch
     assert captured["kwargs"]["retrieval_mode"] == "always_include"
 
 
-def test_ingest_drive_item_route_prefers_the_token_in_the_request(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "env-token")
+def test_ingest_drive_item_route_uses_the_token_in_the_request(monkeypatch) -> None:
     seen = {}
 
     def fake_ingest_drive_item(drive_id, item_id, user_id, doc_type, graph_client, *args, **kwargs):
@@ -71,7 +70,6 @@ def test_ingest_drive_item_route_prefers_the_token_in_the_request(monkeypatch) -
 def test_ingest_drive_item_route_answers_400_for_a_file_that_cannot_be_ingested(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "test-token")
 
     def fake_ingest_drive_item(*args, **kwargs):
         raise ValueError("file exceeds 52428800-byte limit: 60000000")
@@ -87,7 +85,6 @@ def test_ingest_drive_item_route_answers_400_for_a_file_that_cannot_be_ingested(
 def test_ingest_drive_item_route_passes_401_403_404_through_and_folds_the_rest_into_502(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "test-token")
 
     def raising(status):
         def fake(*args, **kwargs):
@@ -100,16 +97,7 @@ def test_ingest_drive_item_route_passes_401_403_404_through_and_folds_the_rest_i
         assert client.post("/kb/ingest-drive-item", json=BODY).status_code == expected
 
 
-def test_ingest_drive_item_route_is_400_without_any_token(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "")
-
-    response = client.post("/kb/ingest-drive-item", json=BODY)
-
-    assert response.status_code == 400
-
-
 def test_graph_client_is_the_one_the_route_builds(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "sharepoint_token", "test-token")
     seen = {}
 
     def fake_ingest_drive_item(drive_id, item_id, user_id, doc_type, graph_client, *args, **kwargs):
@@ -121,3 +109,16 @@ def test_graph_client_is_the_one_the_route_builds(monkeypatch) -> None:
     client.post("/kb/ingest-drive-item", json=BODY)
 
     assert seen["is_graph_client"] is True
+
+
+def test_ingest_drive_item_route_refuses_a_request_without_a_users_token_even_with_a_server_token(monkeypatch) -> None:
+    """No SharePoint call is ever made with a server-wide identity: SHAREPOINT_TOKEN / GRAPH_TOKEN in the environment is ignored."""
+    monkeypatch.setenv("SHAREPOINT_TOKEN", "server-token")
+    called = []
+    monkeypatch.setattr("app.main.ingest_drive_item", lambda *a, **k: called.append(1))
+
+    response = client.post("/kb/ingest-drive-item", json={k: v for k, v in BODY.items() if k != "graph_token"})
+
+    assert response.status_code == 424
+    assert "not connected" in response.json()["detail"]
+    assert not called

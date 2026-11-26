@@ -43,7 +43,7 @@ describe('connectionRows', () => {
     });
 
     it('not set up is its own state, not a fault', () => {
-      expect(row(entries({ sharePoint: entry({ status: 'not_configured' as const, expiresInSeconds: null }) }), 'sharePoint')).toMatchObject({ state: 'off', word: 'Not configured' });
+      expect(row(entries({ sharePoint: entry({ status: 'not_configured' as const, expiresInSeconds: null }) }), 'sharePoint')).toMatchObject({ state: 'off', word: 'Not connected' });
     });
 
     it('is checking until the first answer', () => {

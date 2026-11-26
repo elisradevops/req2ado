@@ -36,10 +36,10 @@ model Session {
 // (credential-vault.service.ts); `ciphertext`/`iv`/`authTag` are each
 // base64. AAD is bound to `ownerKey|kind` at encrypt time so a ciphertext
 // row can't be decrypted correctly if transplanted onto a different
-// owner/kind pair. `ownerKey` is `user:<descriptor>` for per-user
-// credentials (pat, llm_api_key) or the literal string `shared` for the
-// one shared SharePoint token (matches today's single-shared-identity
-// SharePoint design -- see docs/architecture.md). `keyVersion` records
+// owner/kind pair. `ownerKey` is `user:<descriptor>`: every credential is
+// its user's own, the SharePoint token included (the former shared row,
+// ownerKey `shared`, was deleted 2026-11-27: one user's Microsoft identity
+// had served every user's knowledge base). `keyVersion` records
 // which of CREDENTIAL_ENC_KEY / CREDENTIAL_ENC_KEY_PREVIOUS decrypted this
 // row, so rotating the encryption key can re-encrypt lazily instead of
 // needing a big-bang migration.

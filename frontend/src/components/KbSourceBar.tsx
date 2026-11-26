@@ -27,7 +27,7 @@ const STATUS_COPY: Record<SharePointStatus['status'], { label: string; chipClass
     Icon: TriangleAlert,
     iconClassName: 'text-warning-ink',
   },
-  not_configured: { label: 'Not configured', chipClassName: 'bg-surface-alt text-ink-3 border-hairline-strong', Icon: Unplug, iconClassName: 'text-ink-3' },
+  not_configured: { label: 'Not connected', chipClassName: 'bg-surface-alt text-ink-3 border-hairline-strong', Icon: Unplug, iconClassName: 'text-ink-3' },
 };
 
 interface KbSourceBarProps {
@@ -95,13 +95,19 @@ export function KbSourceBar({
   // A token that is invalid or missing cannot read anything, so browsing would only fail. An unreachable Graph may be
   // transient, so it does not block.
   const blocked = status?.status === 'invalid' || status?.status === 'not_configured';
-  const reconnectFirst = blocked && <p className="text-xs text-warning-ink">Reconnect SharePoint first: the saved token cannot read this folder.</p>;
+  const notConnected = status?.status === 'not_configured';
+  const reconnectFirst =
+    blocked && (
+      <p className="text-xs text-warning-ink">
+        {notConnected ? 'Connect SharePoint first, with your own token.' : 'Reconnect SharePoint first: your saved token cannot read this folder.'}
+      </p>
+    );
   // Tiers, not equal buttons: whichever action the user needs next is the one emphasised. While the token is healthy
   // nothing is (Reconnect recedes); when it needs attention Reconnect is, because nothing else will work until it is done.
   const reconnectButton = (
     <Button size="sm" variant={blocked ? 'primary' : 'ghost'} onClick={onReconnect}>
       <KeyRound className="h-4 w-4" aria-hidden="true" />
-      Reconnect
+      {notConnected ? 'Connect' : 'Reconnect'}
     </Button>
   );
 

@@ -12,8 +12,10 @@ describe('SharePointTokenHelp', () => {
     expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
   });
 
-  it('says plainly that one token serves everyone, without claiming a lifetime or a permission the app cannot back up', () => {
-    expect(SHAREPOINT_TOKEN_DIALOG_DESCRIPTION).toMatch(/one token serves everyone/i);
+  it('says plainly that the token is the user own, without claiming a lifetime or a permission the app cannot back up', () => {
+    // Each user connects with their own token (owner finding, 2026-11-26): the copy must never say one token serves everyone.
+    expect(SHAREPOINT_TOKEN_DIALOG_DESCRIPTION).toMatch(/your own access token/i);
+    expect(SHAREPOINT_TOKEN_DIALOG_DESCRIPTION).not.toMatch(/serves everyone/i);
     render(<SharePointTokenHelp />);
     expect(document.body.textContent).not.toMatch(/\b\d+\s*(minutes?|hours?)\b/i);
     expect(document.body.textContent).not.toMatch(/Sites\.|Files\.Read/);

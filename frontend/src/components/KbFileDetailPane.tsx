@@ -66,7 +66,7 @@ export function KbFileDetailPane({
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-start gap-2.5">
-        <FileTypeIcon extension={extension} className="h-9 w-9 flex-none" />
+        <FileTypeIcon extension={extension} tile className="h-12 w-12 flex-none" />
         <p className="min-w-0 break-words text-sm font-semibold text-ink-1">{entry.name}</p>
       </div>
       <dl className="flex flex-col gap-2 text-sm">

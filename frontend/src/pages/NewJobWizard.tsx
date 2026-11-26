@@ -288,7 +288,7 @@ const AI_SUMMARY_WAIT_MS = 90_000;
 function FileStrip({ file, preview, onChangeDocument }: { file: File | null; preview: PreviewResult | null; onChangeDocument: () => void }): React.ReactElement {
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-md border border-hairline bg-surface-alt px-3 py-2" data-testid="file-strip">
-      <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} className="h-6 w-6 flex-none" />
+      <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} tile className="h-8 w-8 flex-none" />
       {file && (
         <span className="min-w-0 truncate text-sm font-semibold text-ink-1" title={file.name}>
           {file.name}
@@ -866,7 +866,7 @@ export function NewJobWizard(): React.ReactElement {
                   }
                 >
                   <div className="flex items-center gap-3">
-                    <FileTypeIcon extension={preview?.fileType ?? file.name.split('.').pop() ?? ''} className="h-9 w-9" />
+                    <FileTypeIcon extension={preview?.fileType ?? file.name.split('.').pop() ?? ''} tile className="h-12 w-12" />
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{file.name}</p>
                       <p className="font-mono text-meta text-ink-3">

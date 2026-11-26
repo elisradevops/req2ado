@@ -321,7 +321,7 @@ describe('KbIngestBatchService', () => {
   });
 
   describe('resumePausedBy()', () => {
-    it('continues every batch paused for that reason, whoever owns it, and leaves the others', async () => {
+    it('continues the batches of that user paused for that reason, and leaves every other user batches paused', async () => {
       prisma = makeKbIngestPrismaFake({
         batches: [
           { id: 'a', userId: USER, status: 'paused', pauseReason: 'sharepoint_token', driveId: 'd', folderPath: '' },
@@ -332,18 +332,19 @@ describe('KbIngestBatchService', () => {
       });
       service = new KbIngestBatchService(prisma as any);
 
-      expect(await service.resumePausedBy('sharepoint_token')).toBe(2);
+      // One user's new SharePoint token must never run another user's batches (owner finding, 2026-11-26).
+      expect(await service.resumePausedBy('sharepoint_token', USER)).toBe(1);
 
       const byId = Object.fromEntries(prisma.batches().map((row) => [row.id, row]));
       expect(byId.a).toMatchObject({ status: 'queued', pauseReason: null });
-      expect(byId.b).toMatchObject({ status: 'queued', pauseReason: null });
+      expect(byId.b).toMatchObject({ status: 'paused', pauseReason: 'sharepoint_token' });
       expect(byId.c).toMatchObject({ status: 'paused', pauseReason: 'something_else' });
       expect(byId.d.status).toBe('running');
       expect(byId.a.version).toBeGreaterThan(0);
     });
 
     it('returns 0 when nothing is paused for it', async () => {
-      expect(await service.resumePausedBy('sharepoint_token')).toBe(0);
+      expect(await service.resumePausedBy('sharepoint_token', USER)).toBe(0);
     });
   });
 

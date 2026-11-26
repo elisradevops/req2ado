@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
-import { Upload, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { FileTypeIcon } from './FileTypeIcon';
+import { DropBoxPrompt } from './DropBoxPrompt';
 import { Button } from '../ui/Button';
 import { formatFileSize } from '../utils/fileSize';
 import { extensionOf, JOB_FILE_EXTENSIONS, JOB_FILE_TYPE_LABELS } from '../utils/extension';
@@ -124,21 +125,21 @@ export function MultiFileDropzone({
           const fromEntries = await readDroppedEntries(event.dataTransfer.items);
           acceptFiles(fromEntries.length > 0 ? fromEntries : Array.from(event.dataTransfer.files));
         }}
+        data-dragging={isDragging || undefined}
         className={cn(
-          'flex cursor-pointer flex-col items-center gap-1.5 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
+          'group flex cursor-pointer flex-col items-center gap-2 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
           isDragging && 'border-accent bg-accent-soft',
           !isDragging && !disabled && 'liftable border-hairline-strong hover:border-accent-soft-border',
           disabled && 'cursor-not-allowed border-hairline-strong opacity-60',
         )}
       >
-        <Upload className="h-6 w-6 text-ink-3" />
-        <span className="text-sm font-semibold">Drop requirements documents here</span>
-        <span className="text-xs text-ink-3">or click to browse — select multiple files, or drag a folder</span>
-        <span className="mt-1 flex items-center gap-2.5">
-          {SUPPORTED_TYPES.map((extension) => (
-            <FileTypeIcon key={extension} extension={extension} className="h-7 w-7" />
-          ))}
-        </span>
+        <DropBoxPrompt
+          title="Drop your requirements documents"
+          dragging={isDragging}
+          choose="Choose files"
+          hint="several at once, or a whole folder"
+          extensions={SUPPORTED_TYPES}
+        />
         <input
           ref={inputRef}
           type="file"
@@ -165,7 +166,7 @@ export function MultiFileDropzone({
           {files.map((file, index) => (
             <li key={`${file.name}-${index}`} className="flex min-w-0 flex-col gap-0.5 rounded-sm border border-hairline bg-surface px-2.5 py-1.5">
               <div className="flex min-w-0 items-center gap-2">
-                <FileTypeIcon extension={extensionOf(file.name)} className="h-5 w-5 flex-none" />
+                <FileTypeIcon extension={extensionOf(file.name)} className="h-6 w-6 flex-none" />
                 <span className="min-w-0 flex-1 truncate text-sm">{file.name}</span>
                 <span className="flex-none font-mono text-meta text-ink-3">{formatFileSize(file.size)}</span>
                 <Button size="sm" variant="ghost" aria-label={`Remove ${file.name}`} onClick={() => onFileRemoved(index)} disabled={disabled}>

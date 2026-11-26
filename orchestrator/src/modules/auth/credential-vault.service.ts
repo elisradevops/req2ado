@@ -4,11 +4,9 @@ import { decryptCredential, encryptCredential } from './credential-crypto';
 
 export type CredentialKind = 'ado_pat' | 'sharepoint_token' | 'llm_api_key';
 
-// The one shared SharePoint identity's owner key -- matches today's design
-// (docs/architecture.md: SharePoint stays a single shared server identity,
-// per-user delegated Graph tokens need an App Registration this deployment
-// doesn't have). Any authenticated user can rotate it (see kb.controller.ts).
-export const SHARED_OWNER_KEY = 'shared';
+// No credential is shared between users any more: the SharePoint token used to be stored once under the owner key "shared", so every
+// user's knowledge base was read with one person's Microsoft identity (owner finding, 2026-11-26). Each user now stores their own under
+// userOwnerKey(); the migration that ended the shared row deletes it.
 
 export function userOwnerKey(userId: string): string {
   return `user:${userId}`;

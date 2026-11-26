@@ -2,7 +2,7 @@
 // (the Knowledge base page and Settings), so the wording cannot drift. It names no permission and no lifetime: the app does not say which scope
 // the folder needs, and the connection status shows when the pasted token expires.
 export const SHAREPOINT_TOKEN_DIALOG_DESCRIPTION =
-  'Paste a fresh access token. It is checked against SharePoint before saving. One token serves everyone who uses the knowledge base, so it carries the access of whoever pastes it.';
+  'Paste your own access token. It is checked against SharePoint before saving, and only your knowledge base uses it: everyone connects with their own, so each reads only what they may open.';
 
 export function SharePointTokenHelp(): React.ReactElement {
   return (
