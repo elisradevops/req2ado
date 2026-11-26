@@ -1,4 +1,9 @@
-import type { ProposalDecision, ReadingDecision, ReadingOutlineItem } from '../api/jobs';
+import type { FileReading, ProposalDecision, ReadingDecision, ReadingOutlineItem } from '../api/jobs';
+
+/** The study's proposals apply unless the user undid them ("keep") before Start (owner rule R4, 2026-11-26). */
+export function isApplied(decision: ProposalDecision | null | undefined): boolean {
+  return decision !== 'keep';
+}
 
 /** One row of the "What it will build" preview: an Epic or Feature as the job will build it with the user's decisions so far. */
 export interface PreviewRow {
@@ -7,16 +12,16 @@ export interface PreviewRow {
   title: string;
   depth: number;
   requirements: number;
-  /** Renamed by an accepted proposal (the title shown is the new one; `was` is the file's). */
+  /** Renamed by a proposal (the title shown is the new one; `was` is the file's). */
   was: string | null;
-  /** A proposal for this item is still undecided. */
-  open: boolean;
+  /** The user undid this item's proposal: it keeps the file's original. */
+  undone: boolean;
 }
 
 /**
- * The outline the study built with every proposal undecided, with the user's decisions applied as the job will apply them: an accepted rename
- * shows its new name, an accepted "remove this level" takes the item out and moves its children up to its parent, and an undecided proposal
- * keeps the file's original (owner decision, 2026-11-25). Rows come in document order, each with its depth.
+ * The outline the study built with every proposal kept (the file's original), with the proposals applied as the job will apply them: a rename
+ * shows its new name, a "remove this level" takes the item out and moves its children up to its parent, and a proposal the user undid keeps the
+ * file's original (owner rule R4, 2026-11-26: proposals apply unless undone). Rows come in document order, each with its depth.
  */
 export function applyDecisions(
   outline: ReadingOutlineItem[],
@@ -25,7 +30,7 @@ export function applyDecisions(
 ): { rows: PreviewRow[]; removed: string[] } {
   const byHeading = new Map(proposals.map((p) => [p.headingId, p]));
   const dropped = new Set(
-    outline.filter((o) => o.headingId && byHeading.get(o.headingId)?.action === 'drop_wrapper' && decisions[o.headingId] === 'accept').map((o) => o.id),
+    outline.filter((o) => o.headingId && byHeading.get(o.headingId)?.action === 'drop_wrapper' && isApplied(decisions[o.headingId])).map((o) => o.id),
   );
   const byId = new Map(outline.map((o) => [o.id, o]));
   const parentOf = (item: ReadingOutlineItem): string | null => {
@@ -44,7 +49,7 @@ export function applyDecisions(
     for (const item of children.get(parent) ?? []) {
       const proposal = item.headingId ? byHeading.get(item.headingId) : undefined;
       const decision = item.headingId ? decisions[item.headingId] : undefined;
-      const renamed = proposal?.action === 'rename' && decision === 'accept' && proposal.newTitle ? proposal.newTitle : null;
+      const renamed = proposal?.action === 'rename' && isApplied(decision) && proposal.newTitle ? proposal.newTitle : null;
       rows.push({
         id: item.id,
         type: item.type,
@@ -52,13 +57,25 @@ export function applyDecisions(
         depth,
         requirements: item.requirements,
         was: renamed ? item.title : null,
-        open: Boolean(proposal) && decision === undefined,
+        undone: Boolean(proposal) && !isApplied(decision),
       });
       walk(item.id, depth + 1);
     }
   };
   walk(null, 0);
   return { rows, removed: outline.filter((o) => dropped.has(o.id)).map((o) => o.title) };
+}
+
+/** The verdict's Epic and Feature counts as the job will build them: the study counted the file's original, so a removed level is taken off. */
+export function appliedCounts(reading: FileReading, decisions: Record<string, ProposalDecision | undefined>): { epics: number; features: number } {
+  const byHeading = new Map(reading.decisions.map((p) => [p.headingId, p]));
+  const removed = reading.outline.filter(
+    (o) => o.headingId && byHeading.get(o.headingId)?.action === 'drop_wrapper' && isApplied(decisions[o.headingId]),
+  );
+  return {
+    epics: reading.epics - removed.filter((o) => o.type === 'Epic').length,
+    features: reading.features - removed.filter((o) => o.type === 'Feature').length,
+  };
 }
 
 /** The decisions to store with the rulebook: only the ones the user made, as the rulebook's [heading id, decision] pairs. */

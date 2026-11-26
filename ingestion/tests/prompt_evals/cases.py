@@ -1599,3 +1599,68 @@ CASES += [
         frozenset({"titles"}),
     ),
 ]
+
+
+# --- choose_parent v1: a parent for each item the build left without one (owner rule R1) --------------------------------------------------
+# Synthetic, from the TV twin's subjects: a removed top level left three Features and a Hebrew one without a parent. Code applies only an
+# offered option (app.leveling.parent_choice), so the eval asks for an offered option per item, the subject's own place where there is
+# one, the document's Epic for an item about the whole product, and a reason in the item's own language.
+
+_PARENT_OPTIONS = {
+    "o0": {"type": "Epic", "title": "Vireo Television Set (VTS)", "excerpt": "This document specifies the Vireo 55 television set and its VR-7 remote."},
+    "o1": {"type": "Epic", "title": "Display and picture", "excerpt": "The panel, its picture modes and the audio of the set."},
+    "o2": {"type": "Epic", "title": "Remote control", "excerpt": "The VR-7 remote: its buttons, its infrared and Bluetooth links, its batteries."},
+    "o3": {"type": "Epic", "title": "Environment and safety", "excerpt": "Operating temperatures, humidity, and the safety and EMC standards."},
+}
+_PARENT_ITEMS = {
+    "f1": {"type": "Feature", "title": "Remote batteries", "excerpt": "The remote runs on two AAA cells.",
+           "children": [{"type": "Requirement", "title": "Battery life of 12 months"}, {"type": "Requirement", "title": "Low-battery warning on screen"}]},
+    "f2": {"type": "Feature", "title": "Picture calibration", "excerpt": "",
+           "children": [{"type": "Requirement", "title": "Contrast ratio of 4000 to 1"}, {"type": "Requirement", "title": "Panel brightness of 350 nits"}]},
+    "f3": {"type": "Feature", "title": "Product family", "excerpt": "The set is sold in three screen sizes under one product name.",
+           "children": [{"type": "Requirement", "title": "Same product family label on the packaging"}]},
+    "f4": {"type": "Feature", "title": "סוללות השלט", "excerpt": "השלט פועל על שתי סוללות AAA.",
+           "children": [{"type": "Requirement", "title": "חיי סוללה של 12 חודשים"}]},
+}
+_PARENT_EXPECTED = {"f1": "o2", "f2": "o1", "f3": "o0", "f4": "o2"}
+
+
+def _parent_payload() -> dict:
+    return {k: {**v, "options": dict(_PARENT_OPTIONS)} for k, v in _PARENT_ITEMS.items()}
+
+
+def _check_parents(result: object) -> Checks:
+    ok = isinstance(result, dict)
+    picks = {k: (v.get("option") if isinstance(v, dict) else None) for k, v in (result.items() if ok else [])}
+    reasons = {k: (v.get("reason") if isinstance(v, dict) else None) for k, v in (result.items() if ok else [])}
+    wrong = [k for k, want in _PARENT_EXPECTED.items() if picks.get(k) != want]
+    return {
+        "every_id": (ok and set(picks) == set(_PARENT_ITEMS), "an id omitted or invented"),
+        "offered": (all(p in _PARENT_OPTIONS for p in picks.values()), "an option that was not offered"),
+        "placed": (not wrong, f"items not placed with their subject (or the whole product under the document's Epic): {wrong}"),
+        "reasons": (all(isinstance(r, str) and r.strip() for r in reasons.values()), "an item without a reason"),
+        "language": (any("֐" <= ch <= "׿" for ch in str(reasons.get("f4") or "")), "the Hebrew item's reason not in Hebrew"),
+    }
+
+
+def _parents_reply(**changes: str | None) -> str:
+    picks = {**_PARENT_EXPECTED, **changes}
+    reasons = {"f1": "Batteries of the remote.", "f2": "About the picture.", "f3": "About the whole product.", "f4": "סוללות של השלט."}
+    return _j({k: {"option": v, "reason": reasons[k]} for k, v in picks.items() if v is not None})
+
+
+CASES += [
+    Case(
+        "choose_parent",
+        "places_each_item_with_its_subject",
+        lambda c: c.choose_parents(_parent_payload()),
+        _check_parents,
+        [_parents_reply()],
+        [
+            _parents_reply(f1="o0"),  # the remote's batteries left under the document's Epic
+            _parents_reply(f2="o9"),  # an option that was not offered
+            _parents_reply(f3=None),  # an id omitted
+        ],
+        frozenset({"structure"}),
+    ),
+]

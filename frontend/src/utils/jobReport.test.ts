@@ -87,6 +87,39 @@ describe('jobReport', () => {
     expect(report).not.toContain('## How this run went'); // no notices, no section
   });
 
+  it('counts a sub-requirement in its parent requirement\'s section, never a requirement as a section (probe, 2026-11-26)', () => {
+    const report = jobReport({
+      ...base,
+      items: [
+        item('e1', null, 'Epic', 'Remote control'),
+        item('f1', 'e1', 'Feature', 'Menu'),
+        item('m1', 'f1', 'Requirement', 'Menu opens on demand', { customerId: 'men_3' }),
+        item('m2', 'm1', 'Requirement', 'Menu shows the input', { customerId: 'men_3.a' }),
+      ],
+    });
+    expect(report).toContain('| Menu | 2 | 2 | 0 |');
+    expect(report).not.toContain('| Menu opens on demand |');
+  });
+
+  it('lists what was left out once, in full, and points to it from the notices instead of cutting it short', () => {
+    const parts = Array.from({ length: 30 }, (_, i) => ({ text: `${i + 1} A section with a long heading of its own`, page: i + 1 }));
+    const report = jobReport({
+      ...base,
+      warnings: [{ kind: 'front_matter_left_out', severity: 'auto_fixed', nodeIds: [], raw: 'x'.repeat(50) + ' '.repeat(1) + 'y'.repeat(400), detail: { parts } }],
+    });
+    expect(report).toContain('- 30 A section with a long heading of its own (page 30)');
+    expect(report).toContain('Listed above, under “What the document\'s structure left out”.');
+    expect(report).not.toContain('yyyy');
+  });
+
+  it('cuts a long notice after a whole word, with a marker', () => {
+    const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(' ');
+    const report = jobReport({ ...base, warnings: [{ kind: 'dropped_row', severity: 'needs_review', nodeIds: [], raw: long, detail: {} }] });
+    const line = report.split('\n').find((l) => l.startsWith('- word0 '))!;
+    expect(line.length).toBeLessThanOrEqual(302);
+    expect(line).toMatch(/ word\d+…$/);
+  });
+
   it('says so plainly when a job has no items', () => {
     expect(jobReport({ ...base, items: [], warnings: [] })).toContain('The job has no proposed items.');
   });

@@ -11,6 +11,7 @@ from collections import Counter
 
 from app.canonical.markup import html_to_markdown
 from app.canonical.model import CanonicalDoc, Table, plain_text_rows
+from app.distillation.title import shortened_title
 from app.study.file_rules import TableRule, clip_detail
 from app.workitem.model import (
     IntegrityWarning,
@@ -96,14 +97,18 @@ def build_table_nodes(
         parent_id = id_of.get(plan.parent) if plan.parent is not None else None
         node_type = _TYPE[plan.type]
         description = _description(rule, row, plan.title)
+        title = shortened_title(plan.title)
+        if title != " ".join(plan.title.split()) and " ".join(plan.title.split()) not in " ".join(description.split()):
+            # A stated title over the Azure DevOps limit is shortened (R6); its full text stays in the description.
+            description = f"{plan.title.strip()}\n\n{description}"
         source_ref = table.source_ref.model_copy(update={"section_path": section_path(position)})
         customer_id = row[rule.customer_id_col].strip() if rule.customer_id_col is not None else ""
         node = WorkItemNode(
             local_id=id_of[position],
             type=node_type,
             parent_local_id=parent_id,
-            title=plan.title[:_MAX_TITLE],
-            source_title=plan.title[:_MAX_TITLE],
+            title=title,
+            source_title=plan.title,
             description=description,
             customer_id=customer_id or None if node_type == WorkItemType.REQUIREMENT else None,
             source_ref=source_ref,
@@ -112,6 +117,9 @@ def build_table_nodes(
             tags=[],
             mode=WorkItemMode.BASELINE,
             child_type=_CHILD_TYPE[node_type],
+            type_stated=True,
+            # Rows of types req2ado does not import (Test Cases) directly under it: content the file states for it (tree_rules, R2).
+            unimported_children=sum(1 for p in rule.rows if p.parent == position and (p.skipped or "").startswith("type:")),
         )
         nodes.append(node)
     return nodes, _warnings(table, rule, id_of)

@@ -72,11 +72,38 @@ def test_row_order_gives_the_nesting_when_nothing_else_does(tmp_path: Path) -> N
 
 
 def test_a_stated_type_is_never_changed_even_when_the_item_has_no_children(tmp_path: Path) -> None:
-    csv_text = "Work Item Type,Title 1,Title 2,Title 3\nEpic,E,,\nFeature,,Empty feature,\nFeature,,F2,\nRequirement,,,R\n"
+    csv_text = (
+        "Work Item Type,Title 1,Title 2,Title 3,Description\nEpic,E,,,\nFeature,,Empty feature,,Planned for the next release.\n"
+        "Feature,,F2,,\nRequirement,,,R,\n"
+    )
     tree = build_baseline_tree(_doc(tmp_path, csv_text))
     by_title = {n.title: n for n in tree.nodes}
     assert by_title["Empty feature"].type == "Feature"
     assert by_title["F2"].type == "Feature"
+
+
+def test_a_stated_item_with_content_but_no_requirement_is_kept_with_a_review_mark(tmp_path: Path) -> None:
+    """Approach C (owner, 2026-11-26): an item the file states is judged by what the file says about it. Its own description, or rows of types
+    req2ado does not import (Test Cases) under it, make it the file's planned item: kept, marked for the reviewer, never written as a mark."""
+    from app.leveling.tree_rules import NO_REQUIREMENT
+
+    csv_text = (
+        "Work Item Type,Title 1,Title 2,Title 3,Description\nEpic,E,,,\nFeature,,With text,,Planned for the next release.\n"
+        "Feature,,With test cases,,\nTest Case,,,TC 1,\nTest Case,,,TC 2,\nFeature,,F2,,\nRequirement,,,R,\n"
+    )
+    by_title = {n.title: n for n in build_baseline_tree(_doc(tmp_path, csv_text)).nodes}
+    assert NO_REQUIREMENT in by_title["With text"].derived_marks
+    assert NO_REQUIREMENT in by_title["With test cases"].derived_marks
+    assert NO_REQUIREMENT not in by_title["F2"].derived_marks and NO_REQUIREMENT not in by_title["E"].derived_marks
+
+
+def test_a_stated_item_with_nothing_is_left_out_and_reported(tmp_path: Path) -> None:
+    """R2: a stated Epic or Feature with no text and nothing under it is not an item; it is listed under Left out."""
+    csv_text = "Work Item Type,Title 1,Title 2,Title 3\nEpic,E,,\nFeature,,Bare feature,\nFeature,,F2,\nRequirement,,,R\n"
+    tree = build_baseline_tree(_doc(tmp_path, csv_text))
+    assert "Bare feature" not in {n.title for n in tree.nodes}
+    left_out = [p["text"] for w in tree.warnings if w.kind.value == "front_matter_left_out" for p in w.detail["parts"]]
+    assert "Bare feature" in left_out
 
 
 def test_a_structure_the_ladder_does_not_allow_is_kept_and_reported(tmp_path: Path) -> None:
@@ -194,7 +221,7 @@ def test_a_row_under_a_skipped_parent_listed_later_is_not_imported(tmp_path: Pat
 
 
 def test_rows_whose_parents_form_a_cycle_are_not_imported_and_are_reported(tmp_path: Path) -> None:
-    doc = _doc(tmp_path, "ID,Parent,Title,Type\n1,2,A,Epic\n2,1,B,Feature\n3,2,C,Requirement\n9,,Root,Epic\n")
+    doc = _doc(tmp_path, "ID,Parent,Title,Type,Description\n1,2,A,Epic,a\n2,1,B,Feature,b\n3,2,C,Requirement,c\n9,,Root,Epic,The root.\n")
     rule = study_tables(doc)["t0"]
     assert dict(rule.skipped_counts()) == {"in_cycle": 2, "under_skipped": 1}
     tree = build_baseline_tree(doc)
@@ -204,7 +231,7 @@ def test_rows_whose_parents_form_a_cycle_are_not_imported_and_are_reported(tmp_p
 
 
 def test_a_duplicate_id_points_children_at_its_first_row(tmp_path: Path) -> None:
-    doc = _doc(tmp_path, "ID,Parent,Title,Type\n1,,E1,Epic\n1,,E2,Epic\n2,1,F,Feature\n")
+    doc = _doc(tmp_path, "ID,Parent,Title,Type,Description\n1,,E1,Epic,One.\n1,,E2,Epic,Two.\n2,1,F,Feature,Planned.\n")
     by_title = {n.title: n for n in build_baseline_tree(doc).nodes}
     assert by_title["F"].parent_local_id == by_title["E1"].local_id
     assert by_title["E2"].parent_local_id is None
@@ -214,7 +241,7 @@ def test_a_deep_chain_listed_child_first_is_built_quickly(tmp_path: Path) -> Non
     import time
 
     depth = 1000
-    lines = ["ID,Parent,Title,Type"] + [f"{i},{i - 1 if i > 1 else ''},E{i},Epic" for i in range(depth, 0, -1)]
+    lines = ["ID,Parent,Title,Type,Description"] + [f"{i},{i - 1 if i > 1 else ''},E{i},Epic,Area {i}." for i in range(depth, 0, -1)]
     doc = _doc(tmp_path, "\n".join(lines) + "\n")
     started = time.perf_counter()
     rule = study_tables(doc)["t0"]

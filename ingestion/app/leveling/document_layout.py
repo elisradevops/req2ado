@@ -275,6 +275,9 @@ def with_left_out_sections(
     )
 
 
+_NAMED_PARTS = 6  # parts named in the message; the detail lists them all
+
+
 def left_out_warning(front: FrontMatter) -> IntegrityWarning | None:
     if not front and not front.parts:
         return None
@@ -282,12 +285,12 @@ def left_out_warning(front: FrontMatter) -> IntegrityWarning | None:
     pages = sorted(
         {p for _t, first, last in front.parts if first is not None for p in range(first, (last or first) + 1)}
     )
-    names = "; ".join(f'"{text}"' + _pages_label(first, last) for text, first, last in front.parts[:12])
-    more = " ..." if len(front.parts) > 12 else ""
+    # Front matter, back matter, and empty sections (owner rule R2) alike: the message names the first few, the detail lists every part.
+    names = "; ".join(f'"{text}"' + _pages_label(first, last) for text, first, last in front.parts[:_NAMED_PARTS])
+    more = f", and {len(front.parts) - _NAMED_PARTS} more" if len(front.parts) > _NAMED_PARTS else ""
     return IntegrityWarning.make(
         WarningKind.FRONT_MATTER_LEFT_OUT,
-        f"Left out as front matter, not requirements: {names}{more}. "
-        f"{len(front.block_ids)} text block(s) and {len(front.table_ids)} table(s) before the first section were not made into items.",
+        f"Left out, not made into items (front or back matter, or a section with nothing to plan): {names}{more}.",
         detail={
             "blockIds": sorted(front.block_ids),
             "tableIds": sorted(front.table_ids),

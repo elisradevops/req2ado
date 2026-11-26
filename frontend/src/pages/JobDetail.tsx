@@ -147,9 +147,12 @@ function truncateForDisplay(text: string): string {
   return `${collapsed.slice(0, VALIDATION_MISMATCH_PREVIEW_LENGTH)}…`;
 }
 
-// The review marks, in the order the filter chips show them (owner decision, 2026-11-25: filters only, never written).
-const REVIEW_MARKS = ['TBD', 'Should', 'Will', 'No obligation'];
+// The review marks, in the order the filter chips show them (owner decision, 2026-11-25: filters only, never written). "No requirement under
+// it" marks an Epic or Feature the file states, with content but no requirement below it: kept, for the reviewer to keep or untick (2026-11-26).
+const NO_REQUIREMENT_MARK = 'No requirement under it';
+const REVIEW_MARKS = ['TBD', 'Should', 'Will', 'No obligation', NO_REQUIREMENT_MARK];
 const MARK_TIP = "Read from the requirements' own text. For filtering only; never written to Azure DevOps.";
+const NO_REQUIREMENT_TIP = 'The file states this item, but no requirement sits under it. Untick it to leave it out of the write.';
 
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -2561,7 +2564,11 @@ export function JobDetail(): React.ReactElement {
     const byId = new Map(diff.map((entry) => [entry.localId, entry]));
     const cache = new Map<string, boolean>();
     const idsOf = (keep: (entry: DryRunDiffEntry) => boolean): Set<string> => new Set(diff.filter(keep).map((entry) => entry.localId));
-    const chips = REVIEW_MARKS.map((mark) => ({ key: mark, ids: idsOf((entry) => !!entry.derivedMarks?.includes(mark)), tip: MARK_TIP }));
+    const chips = REVIEW_MARKS.map((mark) => ({
+      key: mark,
+      ids: idsOf((entry) => !!entry.derivedMarks?.includes(mark)),
+      tip: mark === NO_REQUIREMENT_MARK ? NO_REQUIREMENT_TIP : MARK_TIP,
+    }));
     chips.push({ key: 'Suggestion', ids: idsOf((entry) => entry.suggestion?.decision === 'pending'), tip: 'A suggested wording waiting for your decision. Nothing is applied until you accept it.' });
     chips.push({ key: 'Left out', ids: idsOf((entry) => isExcludedWithAncestors(entry, byId, cache)), tip: 'Left out of the write: unchecked, or under an unchecked parent.' });
     return chips.filter((chip) => chip.ids.size > 0);

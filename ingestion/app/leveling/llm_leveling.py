@@ -105,13 +105,16 @@ from app.leveling.tree_builder import (
     _hash_identity,
     _hash_identity_for_synthesized_node,
     _is_unsupported_content_note,
+    _mark_type_stated,
     _order_key,
+    _rehash,
     _table_to_html,
     _widen_page_end,
     figures_by_id,
     strip_repeated_titles,
 )
 from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
+from app.leveling.tree_rules import apply_tree_rules
 from app.leveling.warnings_finalize import finalize_warnings
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.request_identity import user_scope
@@ -833,6 +836,7 @@ def _detect_deterministic_subtrees(
         stated_types = apply_stated_type_labels(
             nodes, _hash_description, labels=document_rules.labels if document_rules else None
         )
+        _mark_type_stated(nodes, stated_types)
         if document_rules is not None:
             stated_types = lock_types_by_depth(nodes, document_rules.depth_types, stated_types)
         type_headings_by_shape(nodes, locked=stated_types, leaf_floor=learn_leaf_floor(nodes))
@@ -1595,13 +1599,15 @@ def build_survey_tree(
     if handle is not None:
         handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
     tree.warnings.extend(prestudy_warnings)
+    # What a tree must never be, whatever built it (app.leveling.tree_rules): empty items, parentless Features or Requirements, long titles.
+    emptied = apply_tree_rules(tree.nodes, tree.warnings, _derive_doc_title(arguments["doc"]), _rehash)
     # Sections the document grammar left out inside the body (a revision history in chapter 1, a traceability listing at the end) join
     # the front matter left out here: what was left out is reported once.
     inner = [w for w in tree.warnings if w.kind == WarningKind.FRONT_MATTER_LEFT_OUT]
     tree.warnings = [w for w in tree.warnings if w.kind != WarningKind.FRONT_MATTER_LEFT_OUT]
     front = with_left_out_sections(
         front,
-        [(p["text"], p.get("page"), p.get("pageEnd", p.get("page"))) for w in inner for p in (w.detail or {}).get("parts", [])],
+        [*((p["text"], p.get("page"), p.get("pageEnd", p.get("page"))) for w in inner for p in (w.detail or {}).get("parts", [])), *emptied],
     )
     left_out = left_out_warning(front) if front is not None else None
     if left_out is not None:

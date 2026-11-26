@@ -32,6 +32,7 @@ from app.leveling.informational import fold_informational_sections
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
+from app.leveling.tree_rules import apply_tree_rules
 from app.leveling.warnings_finalize import finalize_warnings
 from app.study.heading_rules import apply_stated_type_labels, lock_types_by_depth
 from app.study.rulebook import FileRulebook
@@ -1031,6 +1032,13 @@ def _rehash(node: WorkItemNode) -> None:
     node.identity_hash = _hash_identity(node.description, node.source_ref)
 
 
+def _mark_type_stated(nodes: list[WorkItemNode], labelled: dict) -> None:
+    """The headings whose label states their type ("Feature: Audio"): the file's own items (app.leveling.tree_rules, R2)."""
+    for node in nodes:
+        if node.local_id in labelled:
+            node.type_stated = True
+
+
 def build_baseline_tree(
     doc: CanonicalDoc, rulebook: FileRulebook | None = None, leave_out_front_matter: bool = True
 ) -> WorkItemTree:
@@ -1053,6 +1061,8 @@ def build_baseline_tree(
         if folded is not None:
             built.warnings.append(folded)
     _titles_without_customer_id(built.nodes)
+    # What a tree must never be, whatever built it (app.leveling.tree_rules): empty items, parentless Features or Requirements, long titles.
+    front = with_left_out_sections(front, apply_tree_rules(built.nodes, built.warnings, _derive_doc_title(body), _rehash))
     tree = assign_identity_v2(built, doc)
     left_out = left_out_warning(front) if front is not None else None
     if left_out is not None:
@@ -1545,6 +1555,7 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
     stated_types = apply_stated_type_labels(
         nodes, _hash_description, front_matter_ids, document_rules.labels if document_rules else None
     )
+    _mark_type_stated(nodes, stated_types)
     if document_rules is not None:
         stated_types = lock_types_by_depth(nodes, document_rules.depth_types, stated_types, front_matter_ids)
     leaf_floor = learn_leaf_floor(nodes, front_matter_ids)

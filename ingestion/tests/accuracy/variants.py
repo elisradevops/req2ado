@@ -331,18 +331,21 @@ class Variant:
     build: Callable[[Path], Path]
     tabular: bool  # carries the Test Case rows (types outside the ladder) too
     rich: bool  # the source has bold/list formatting that should survive as Markdown
+    # The file states each item's type (a type column, a "Feature:" label). Only then is an Epic or Feature with no requirement below it the
+    # file's own planned item, kept; otherwise it is a section with no requirement, left out and reported (owner approach C, 2026-11-26).
+    states_types: bool = False
 
 
 VARIANTS: list[Variant] = [
-    Variant("csv_ado", build_csv, True, True),
-    Variant("xlsx_ado", build_xlsx_ado, True, True),
-    Variant("xlsx_flat_plain", build_xlsx_flat, True, False),
+    Variant("csv_ado", build_csv, True, True, states_types=True),
+    Variant("xlsx_ado", build_xlsx_ado, True, True, states_types=True),
+    Variant("xlsx_flat_plain", build_xlsx_flat, True, False, states_types=True),
     Variant("docx_headings", lambda o: build_docx(o, "docx_headings.docx"), False, False),
     Variant(
         "docx_numbered", lambda o: build_docx(o, "docx_numbered.docx", numbered=True), False, False
     ),
     Variant(
-        "docx_labeled", lambda o: build_docx(o, "docx_labeled.docx", labeled=True), False, False
+        "docx_labeled", lambda o: build_docx(o, "docx_labeled.docx", labeled=True), False, False, states_types=True
     ),
     Variant("md_markdown", lambda o: build_md(o, "md_markdown.md", raw_html=False), False, False),
     Variant("md_rawhtml", lambda o: build_md(o, "md_rawhtml.md", raw_html=True), False, True),

@@ -54,7 +54,24 @@ def _first_sentence(text: str) -> str:
     return text
 
 
-def extract_baseline_title(text: str, max_length: int = 256) -> str:
+# Azure DevOps refuses a title over 255 characters, for every work item type (owner rule R6, 2026-11-26).
+ADO_TITLE_LIMIT = 255
+SHORTENED = "…"
+
+
+def shortened_title(text: str, limit: int = ADO_TITLE_LIMIT) -> str:
+    """`text` on one line, or, when longer than `limit`, cut after the last whole word that fits, with a "…" marker so a reader can tell
+    the title was shortened (the full text stays in the description). A single unbroken run of characters is cut at the limit."""
+    one_line = " ".join(text.split())
+    if len(one_line) <= limit:
+        return one_line
+    room = one_line[: limit - len(SHORTENED) + 1]
+    cut = room.rfind(" ")
+    head = room[:cut].rstrip(" ,;:-–—") if cut > 0 else room[: limit - len(SHORTENED)]
+    return head + SHORTENED
+
+
+def extract_baseline_title(text: str, max_length: int = ADO_TITLE_LIMIT) -> str:
     """BASELINE-mode title extraction: never summarizes or paraphrases, only
     extracts/truncates the existing verbatim text. Takes the FIRST SENTENCE
     of the (stripped) text as the title candidate when one is detectable
@@ -65,10 +82,8 @@ def extract_baseline_title(text: str, max_length: int = 256) -> str:
 
     If the candidate (first sentence, or whole text when no boundary
     exists) already fits within max_length, it is returned unchanged.
-    Otherwise, truncates the CANDIDATE at the last whitespace boundary at
-    or before max_length so words aren't split mid-way; if no whitespace
-    exists within the window (a single unbroken run of characters),
-    hard-cuts at exactly max_length.
+    Otherwise it is shortened_title(): cut after the last whole word that
+    fits, with a "…" marker, the whole within max_length.
 
     Operates on Unicode codepoints (Python's native str semantics), so
     multi-codepoint content (e.g. emoji) truncates safely without raising or
@@ -87,8 +102,4 @@ def extract_baseline_title(text: str, max_length: int = 256) -> str:
     if len(candidate) <= max_length:
         return candidate
 
-    window = candidate[:max_length]
-    last_space = window.rfind(" ")
-    if last_space == -1:
-        return window
-    return window[:last_space].rstrip()
+    return shortened_title(candidate, max_length)

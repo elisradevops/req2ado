@@ -19,13 +19,13 @@ alone, so the same file always gives the same tree:
   * **descriptions** are the document's text: a requirement's is its text without its code (the code is the Customer ID), with its
     lists and Notes, then its trace set apart by a blank line; an Epic's or Feature's is only the section's own text before its first
     requirement, and empty when it has none (never its title repeated);
-  * **a section whose whole body is a one-line marker** ("None.", "Not applicable.") is an empty Feature or left out, as the study
-    decided, never a Requirement;
+  * **a section whose whole body is a one-line marker** ("None.", "Not applicable.") is left out and reported (owner rule R2), never an
+    item;
   * **a chapter with no requirements** before the requirement chapters describes the document: its prose (only the sections the study
     confirmed as context, when it ran) is the top Epic's description, and its sections that hold tables (revision history,
     references, abbreviations) are front matter, left out and reported; a chapter with no requirements after them (a traceability
     listing) is back matter, left out and reported;
-  * **proposals** the study made (remove a generic level, rename it) are applied only when the user accepted them.
+  * **proposals** the study made (remove a generic level, rename it) apply unless the user undid them before Start (owner rule R4).
 
 Used by BASELINE (tree_builder.build_baseline_tree) and SURVEY (llm_leveling) alike, whenever the document has a learned code shape and
 numbered headings; any other document is built as before."""
@@ -97,7 +97,7 @@ class DocumentGrammar:
     back_matter_heading_ids: frozenset[str] = frozenset()
     source: Literal["code", "model"] = "code"
     # From the study's document profile: the cover title (names an Epic made for Features at the top), heading spelling fixes (heading
-    # block id -> fixed text after its number, applied automatically) and the proposals the user accepted (heading block id -> proposal).
+    # block id -> fixed text after its number, applied automatically) and the proposals that apply (heading block id -> proposal).
     cover_title: str | None = None
     spelling: tuple[tuple[str, str], ...] = ()
     accepted: tuple[tuple[str, object], ...] = ()
@@ -173,9 +173,9 @@ def learn_grammar(doc: CanonicalDoc, rulebook: object | None = None) -> Document
 
 
 def _accepted_proposals(document: object) -> tuple[tuple[str, object], ...]:
-    """The proposals the user accepted (a proposal with no decision keeps the file's original: owner decision)."""
+    """The proposals that apply: every one the user did not undo ("keep") before Start (owner rule R4, 2026-11-26)."""
     decisions = dict(getattr(document, "proposal_decisions", ()) or ())
-    return tuple((p.block_id, p) for p in getattr(document, "proposals", ()) or () if decisions.get(p.block_id) == "accept")
+    return tuple((p.block_id, p) for p in getattr(document, "proposals", ()) or () if decisions.get(p.block_id) != "keep")
 
 
 def _learn_part_labels(doc: CanonicalDoc, code: CodeShape) -> tuple[str, ...]:
@@ -283,7 +283,6 @@ class _Builder:
         self.nodes: list[WorkItemNode] = []
         self.left_out: list[tuple[str, int | None, int | None]] = []
         self.context: list[str] = []
-        self.empty: list[str] = []
         self.fresh: dict[str, bool] = {}
         self.acronyms = document_acronyms(doc)
         self.context_text: list[str] = []  # the context chapter's own text: the top Epic's description
@@ -489,15 +488,10 @@ class _Builder:
             return []
         parent_id = parent.local_id if parent is not None else None
         if _is_marker(section):
-            if self.g.empty_treatment == "leave_out":
-                self._leave_out(section)
-                return []
-            self.empty.append(section.title)
-            marker = " ".join(section.body[0].text.split())
-            node = self._node(f"g_{section.heading.id}", WorkItemType.FEATURE, parent_id, self._title(section), marker,
-                              self._ref([section.heading, *section.body], path))  # fmt: skip
-            node.source_title = section.title
-            return [node]
+            # No empty items (owner rule R2, 2026-11-26): a section whose whole text is "None." or "Not applicable." is left out and
+            # reported, whatever the study answered for empty sections.
+            self._leave_out(section)
+            return []
         intro, units = self._units(section)
         own = [b.text for b in intro]
         tables = self._tables_html(section.tables)

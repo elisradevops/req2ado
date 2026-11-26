@@ -1,7 +1,7 @@
 """What the new-job page shows about a studied file (the approved mockup, 2026-11-25): the verdict, the decisions, the automatic fixes, what
 was left out, and the Epics and Features the job will build -- read off the same deterministic build the job runs, with no model call.
 
-The outline is built with every proposal undecided (the file's original); the page applies the user's Accept / Keep to it as they decide, and
+The outline is built with every proposal kept (the file's original); the page applies the proposals, and the user's undos, to it, and
 the job applies the stored decisions for real. Display only: not part of the rulebook, its hash or prestudy_version()."""
 
 from __future__ import annotations
@@ -28,8 +28,10 @@ def file_reading(doc: CanonicalDoc, rulebook: FileRulebook) -> dict | None:
     document: DocumentRules | None = rulebook.document
     if document is None:
         return None
-    undecided = FileRulebook(tables=rulebook.tables, document=DocumentRules(**{**document.__dict__, "proposal_decisions": ()}))
-    tree = build_baseline_tree(doc, undecided)
+    # The file's own structure, every proposal kept, so each decision shows what it changes (proposals apply by default: owner rule R4).
+    kept = tuple((p.block_id, "keep") for p in document.proposals)
+    original = FileRulebook(tables=rulebook.tables, document=DocumentRules(**{**document.__dict__, "proposal_decisions": kept}))
+    tree = build_baseline_tree(doc, original)
     nodes = tree.nodes
     children: dict[str, list] = {}
     for n in nodes:
@@ -91,7 +93,11 @@ def _examples(nodes: list) -> list[dict]:
     coded = [n for n in nodes if n.type == WorkItemType.REQUIREMENT and n.customer_id]
     sub = [n for n in coded if (parent := by_id.get(n.parent_local_id or "")) is not None and parent.type == WorkItemType.REQUIREMENT]
     chosen = coded[:2] + sub[:1] if sub else coded[:3]
-    return [
-        {"customerId": n.customer_id, "title": n.title, "under": by_id[n.parent_local_id].title if n.parent_local_id in by_id else None}
-        for n in chosen
-    ]
+    def under(node) -> str | None:  # noqa: ANN001
+        parent = by_id.get(node.parent_local_id or "")
+        if parent is None:
+            return None
+        # A parent requirement is named by its code: its title here is still its whole sentence (short titles come later, in the job).
+        return parent.customer_id if parent.type == WorkItemType.REQUIREMENT and parent.customer_id else parent.title
+
+    return [{"customerId": n.customer_id, "title": n.title, "under": under(n)} for n in chosen]

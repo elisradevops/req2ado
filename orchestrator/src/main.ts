@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/http-exception.filter';
+import { llmRequestLog } from './common/llm-request-log.middleware';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -18,6 +19,8 @@ async function bootstrap(): Promise<void> {
   // model/capability problem but was this limit. 10mb covers realistic
   // embedded-image sizes with headroom; this route is bearer-guarded
   // service-to-service traffic, not public-facing.
+  // Before the body parser: a model-proxy request refused there (a body cut off mid-send) is logged too (common/llm-request-log.middleware.ts).
+  app.use(llmRequestLog());
   app.useBodyParser('json', { limit: '10mb' });
   // Previously no SIGTERM/SIGINT handling at all -- a k8s pod termination
   // (rolling update, scale-down, node drain) killed the process immediately,

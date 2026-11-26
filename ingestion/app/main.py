@@ -77,7 +77,8 @@ from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
-from app.leveling.requirement_titles import write_requirement_titles
+from app.leveling.parent_choice import choose_parents
+from app.leveling.requirement_titles import was_shortened, write_requirement_titles
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.study import (
@@ -2438,13 +2439,29 @@ async def _survey_level(
     return tree
 
 
+def _needs_model_passes(tree: WorkItemTree) -> bool:
+    """Whether the tree has anything the model passes after the build work on: grammar-built requirements to title, items the build left
+    without a parent (R1), or titles it had to shorten (R6)."""
+    return any(
+        n.verbatim and n.type == WorkItemType.REQUIREMENT or was_shortened(n) for n in tree.nodes
+    ) or any(w.kind == WarningKind.CATCHALL_EPIC_WRAP for w in tree.warnings)
+
+
 def _with_requirement_titles(tree: WorkItemTree, rulebook: FileRulebook | None, client, user_id: str | None) -> WorkItemTree:  # noqa: ANN001
-    """Short titles for the requirements the document's grammar built (app.leveling.requirement_titles), unless the study found the file
-    gives each requirement its own title (title policy "extract"). Fail-open: the extracted titles stay, with a warning."""
+    """The model passes after the build, in both modes (owner rules, 2026-11-26), all fail-open: code's result stays when a pass fails.
+    First the parents of the items the build left without one (app.leveling.parent_choice, R1); then short titles for the requirements the
+    document's grammar built, unless the study found the file gives each requirement its own title (title policy "extract"), and for every
+    title the build had to shorten to the Azure DevOps limit, whatever the policy (app.leveling.requirement_titles, R6)."""
+    choose_parents(tree.nodes, tree.warnings, client, user_id)
     document = rulebook.document if rulebook is not None else None
-    if getattr(document, "title_policy", None) == "extract":
-        return tree
-    write_requirement_titles(tree.nodes, client, tree.warnings, user_id, settings.survey_chunk_concurrency)
+    write_requirement_titles(
+        tree.nodes,
+        client,
+        tree.warnings,
+        user_id,
+        settings.survey_chunk_concurrency,
+        grammar_requirements=getattr(document, "title_policy", None) != "extract",
+    )
     return tree
 
 
@@ -2804,7 +2821,7 @@ async def level(
     tree.warnings.extend(stale_rulebook)
     # Both modes read the file with AI (owner decision, 2026-11-25): a job's requirements get short titles. A call without a user (the
     # wizard's left-out preview) has no model of its own and keeps the extracted titles.
-    if user_id and any(n.verbatim and n.type == WorkItemType.REQUIREMENT for n in tree.nodes):
+    if user_id and _needs_model_passes(tree):
         try:
             client = await _survey_client(model, user_id)
         except Exception as exc:  # noqa: BLE001 -- fail-open: titles are an enhancement, never a dependency of the tree

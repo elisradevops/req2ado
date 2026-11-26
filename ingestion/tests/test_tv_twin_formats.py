@@ -80,7 +80,7 @@ def _doc(fmt: str, tmp_root: str):
 
 def _study(doc) -> FileRulebook:
     """What the file study answers for the TV twin (the hand study), keyed by heading number and cover line, checked by the same code
-    that checks a model's answer. Its proposals are undecided, so the target keeps the file's original names."""
+    that checks a model's answer. Its proposals are undecided, so they apply (owner rule R4): the target holds the proposed names."""
     headings = document_headings(doc)
     by_number = {h["number"]: h["i"] for h in headings if h["number"]}
     cover = cover_lines(doc)
@@ -146,7 +146,7 @@ def test_the_gold_tree_has_the_documents_counts() -> None:
     types = [n["type"] for n in GOLD]
     codes = [n["customer_id"] for n in GOLD if n["customer_id"]]
     assert (types.count("Epic"), types.count("Feature"), types.count("Requirement")) == (
-        10,
+        9,  # "General" is a removed level (R4)
         25,
         121,
     )
@@ -159,7 +159,7 @@ def test_gold_titles_are_clean() -> None:
         for n in GOLD
         if re.match(r"^\s*\d", n["title"])
         or CODE.search(n["title"])
-        or re.search(r"\([A-Z0-9_]+\)$", n["title"])
+        or re.search(r"\([A-Z]*[_0-9][A-Z0-9_]*\)$", n["title"])  # a code such as (SW_DESIGN); an acronym such as (VTS) is a name
     ]
     assert not bad, bad
 

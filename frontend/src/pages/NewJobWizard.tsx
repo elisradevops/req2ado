@@ -672,8 +672,9 @@ export function NewJobWizard(): React.ReactElement {
       ? { readWith: rules.model ?? defaultModelName, jobUses: modelForRules.current ?? defaultModelName }
       : null;
 
-  // What was read from a studied document (the verdict, the decisions, the outline), and the user's Accept / Keep on each proposal. Decisions
-  // start from what the stored rulebook holds; they are saved with it when the job starts, so the job applies exactly what was decided.
+  // What was read from a studied document (the verdict, the decisions, the outline), and the user's undos: each proposal applies unless undone
+  // (owner rule R4, 2026-11-26). Decisions start from what the stored rulebook holds; they are saved with it when the job starts, so the job
+  // applies exactly what was decided.
   const reading = rules.status === 'ready' ? (rules.view?.details?.reading ?? null) : null;
   const [decisions, setDecisions] = useState<Record<string, ProposalDecision | undefined>>({});
   useEffect(() => {

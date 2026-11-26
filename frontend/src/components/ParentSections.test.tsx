@@ -10,7 +10,8 @@ const item = (localId: string, parentLocalId: string | null, type: string, title
 });
 
 const rename: ReadingDecision = { headingId: 'b4', action: 'rename', title: 'General', newTitle: 'Power', reason: 'Its sections are all about power.', decision: 'accept' };
-const drop: ReadingDecision = { headingId: 'b9', action: 'drop_wrapper', title: 'Requirements', newTitle: null, reason: 'A level that only groups.', decision: null };
+// A level removal the user undid on the new-job page (a removal applies unless undone: owner rule R4), so its item is in the tree.
+const drop: ReadingDecision = { headingId: 'b9', action: 'drop_wrapper', title: 'Requirements', newTitle: null, reason: 'A level that only groups.', decision: 'keep' };
 
 describe('decisionFor', () => {
   it('finds the decision for the heading an item was built from, and none for other items', () => {

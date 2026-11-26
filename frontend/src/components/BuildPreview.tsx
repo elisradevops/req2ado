@@ -4,7 +4,7 @@ import type { FileReading, ProposalDecision } from '../api/jobs';
 import { applyDecisions } from '../utils/buildPreview';
 
 // The new-job page's "What it will build" (the approved mockup, 2026-11-25): the Epics and Features the job will build, with their
-// requirement counts, updated as the user decides each proposal. The one place the tree is previewed ("About this file" has no copy).
+// requirement counts, with the study's proposals applied unless the user undid them (owner rule R4, 2026-11-26). The one place the tree is previewed ("About this file" has no copy).
 
 export function BuildPreview({ reading, decisions }: { reading: FileReading; decisions: Record<string, ProposalDecision | undefined> }): React.ReactElement {
   const { rows, removed } = applyDecisions(reading.outline, reading.decisions, decisions);
@@ -20,13 +20,9 @@ export function BuildPreview({ reading, decisions }: { reading: FileReading; dec
               <span dir="auto" className={`min-w-0 truncate ${row.was ? 'font-semibold text-accent-ink' : ''}`} title={row.was ? `Renamed from ${row.was}` : undefined}>
                 {row.title}
               </span>
-              {row.open && (
-                <span
-                  className="grid h-4 w-4 flex-none place-items-center rounded-full border border-accent-soft-border bg-accent-soft text-micro text-accent-ink"
-                  title="A decision is open"
-                  aria-label="A decision is open"
-                >
-                  ?
+              {row.undone && (
+                <span className="flex-none text-xs text-ink-3" title="You undid the proposed change: it keeps the file's original.">
+                  as in the file
                 </span>
               )}
               <span className="ml-auto pl-2 font-mono text-xs text-ink-3">{row.requirements}</span>
@@ -39,7 +35,7 @@ export function BuildPreview({ reading, decisions }: { reading: FileReading; dec
             {epics} Epics · {features} Features · {reading.requirements} Requirements
           </span>
           <br />
-          {removed.length > 0 && `Removed level: ${removed.join(', ')}. `}Numbers are requirements. Updates as you decide.
+          {removed.length > 0 && `Removed level: ${removed.join(', ')}. `}Numbers are requirements. Updates as you undo or apply a change.
         </p>
       </div>
     </SectionCard>

@@ -2185,16 +2185,24 @@ sit on the page, not in cards; the decision list and the mode cards are the only
   model or ask your administrator.", and a "Try again" button; the bar says "Start waits for the file study. Try again above." It replaces
   the old fallback card, which no longer appears for a failed study.
 - **When it is read:** a check mark, "Read as <kind>", and one `tabular-nums` line of counts (`121 requirements · 120 with IDs · 10 Epics ·
-  25 Features`); a ghost "About this file" button. Then the decisions, if any: a header "N decisions · M open" with "Undecided ones keep the
-  file's original.", and one row per proposal ("Rename “General” to “Power”", "Remove the level “Requirements”") with a "Why?" that opens the
-  reason in place and an Accept / Keep pair (`aria-pressed`). A decision never applies itself. Changed decisions are saved with the rulebook
-  on Start.
+  25 Features`, counted as the job will build them, a removed level taken off); a ghost "About this file" button. Then the study's changes
+  to the file's structure, if any: a header "N changes to the file's structure · M undone" with "Applied unless you undo them before
+  Start.", and one row per change, said as done ("Renamed “Requirements” to “Vireo Television Set (VTS)”", "Removed the level “General”")
+  with a "Why?" that opens the reason in place and an outline **Undo** (`RotateCcw`); an undone row reads "Kept “General” as the file has
+  it" with **Apply again**. Changes apply by default (owner rule R4, 2026-11-26, replacing "a decision never applies itself"); the user's
+  undos are saved with the rulebook on Start.
+- **What the tree never has (owner rules, 2026-11-26), whatever the file:** a Feature or Requirement without a parent (R1: code completes
+  the ladder, then AI places each such item among the parents code offers, reported as "Placed by AI"); an Epic or Feature with no
+  requirement below it that the file does not state (R2: its text goes into the item above as context; a placeholder such as "None." or an
+  empty section is left out and listed; one the file states with content, such as a Feature holding Test Cases, is kept and marked "No
+  requirement under it"); a generic container level left in place (R3: renamed or removed by the study); a title over 255 characters (R6:
+  AI names it, or it is cut after a whole word with "…", the full text kept in the description). Same-type nesting stays allowed (R5).
 - **"About this file"** is a dialog sliding in from the right (full screen on a phone) holding all the detail: how it was read (kind, cover,
   the context kept as the top Epic's description), requirements and IDs (the code shape, that the code becomes the Customer ID), examples
   with "↳ under …", what was left out with page ranges, and what was fixed automatically. It has no tree.
 - **The rail** (`lg` and up, sticky): "This run" (mode, where it lands, the time), then "What it will build": the Epics and Features with
-  their requirement counts, recomputed as decisions change (an accepted rename in `accent-ink`, a removed level gone with its children moved
-  up, an open decision marked "?"), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
+  their requirement counts, recomputed as changes are undone or applied (a rename in `accent-ink`, a removed level gone with its children
+  moved up, an undone change marked "as in the file" in `text-xs text-ink-3`), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
   box: rows keep `min-h`). Hidden while the study runs.
 - **The Start bar:** one row: Back, then one column holding what Start waits for (the destination still missing, the reading, the
   missing model) above the §0 safety line, then "Looks right — start job" (primary, `Activity` glyph, never `signal`). On a phone the column
@@ -2838,8 +2846,11 @@ durable `job_failed` event, when there is one, still takes precedence. Reading t
 - **The row checkbox means "will be written".** Every row starts checked; unchecking leaves the item and its subtree out (the same exclude
   endpoint as before). A row under a left-out parent shows unchecked and disabled, its label "Write <title> (its parent is left out)".
   The accessible name is "Write <title>", never "Exclude".
-- **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code, never written to Azure DevOps and
-  never called tags) show after the title in `text-xs text-ink-3`, no chip, no tint. Colour stays for a row that blocks the write.
+- **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code), and "No requirement under it"
+  (an Epic or Feature the file states with content but no requirement below it, kept so the reviewer can untick it; 2026-11-26), are never
+  written to Azure DevOps and never called tags. They show after the title in `text-xs text-ink-3`, no chip, no tint.
+- **"Placed by AI"** (`parent_chosen`, needs review): items the build left without a parent, each moved by AI under one of the parents code
+  offered, with its reason (owner rule R1). Colour stays for a row that blocks the write.
 - **Filter chips for the marks.** Above the tree, one chip per mark present ("TBD · 3"), pressed to narrow the tree; they combine with the
   other filters (an intersection), and with none pressed they do not filter. After the marks, **Suggestion · n** (a suggestion waiting for a
   decision) and **Left out · n** (left out itself or under a left-out parent, the Write bar's count).
@@ -4100,8 +4111,8 @@ the link never lands in proxy or access logs; the server takes the user from the
 - **Mode names (2026-11-25).** The modes are **Standard** and **With AI review** in all user copy; BASELINE and SURVEY are code and API
   names only. Both modes use AI to read the file: never say a mode runs no model or has no model cost. Every AI wording change is a
   suggestion, and copy never says one was applied by itself.
-- **Marks are not tags.** TBD, Should, Will and No obligation are "marked in the text"; "tags" means only the file's own tags, which
-  are written.
+- **Marks are not tags.** TBD, Should, Will and No obligation are "marked in the text", and "No requirement under it" describes an item's
+  place; "tags" means only the file's own tags, which are written.
 - **Glossary.** Say "Azure DevOps" and "work item", never "ADO" or "WI" in prose
   (`WI-12345` as an identifier is fine). The write is **Write to Azure DevOps**;
   "Confirm" is retired (an item that needs attention is "Fix before writing").
@@ -4541,5 +4552,6 @@ code, then moving its row up into §18.
 | BASELINE / SURVEY in user copy | Standard / With AI review (§12) | `utils/labels.ts`, `utils/warningKinds.ts`, `components/ProgressBanner.tsx`, `BulkApproveDialog.tsx`, `KbAddDialog.tsx`, `KbAddBatchDialog.tsx`, `KbFileDetailPane.tsx`, `KbUnlistedContentDialog.tsx`, `pages/KnowledgeBase.tsx`, `BatchJobWizard.tsx`, `NewJobWizard.tsx`. 2026-11-25. |
 | Review additions from the approved mockup: Suggestion and Left out chips, row notes, "About this file" from the job header, Its decision, Under it, the empty-description line | §11.3.7, §11.4.5 | `pages/JobDetail.tsx`, `components/DiffTree.tsx` (`rowNotes`), new `components/ParentSections.tsx`, `NodeDetailDialog.tsx` (`decisions`, `onOpenEntry`), `NodeDetailPanel.tsx` (`parentSlot`), `AboutFilePanel.tsx` (`showDecisions`), `api/jobs.ts`; server `GET /jobs/:id/file-reading` (`JobsService.getFileReading`, no migration). Built 2026-11-26. Tests: `ParentSections.test.tsx`, `JobDetail.test.tsx`, `NodeDetailDialog.test.tsx`, `NodeDetailPanel.test.tsx`, `DiffTree.test.tsx`, `jobs.service.spec.ts`, `jobs.controller.spec.ts`. |
 | Browser walk of the new-job page and the review at 1440 and 390 px (2026-11-26) | fixes found by the walk | Local build against a mock API fed by the TV twin through the real ingestion code (no backend, no model). Fixed: a stray "0" in an Epic's dialog (`NodeDetailPanel.tsx`, the file-details condition); the rail list's screen-reader labels stretching the page by about 300 px (`BuildPreview.tsx`, list `relative`, as F15); the blocked Write bar's screen-reader count making the whole window scroll by 52 px after "Fix 1 item" (`WriteBar.tsx`, now `sticky`, which positions it); the Write bar below the fold on arrival (now sticky, owner decision); the Start bar wrapping to three rows with Back alone (`NewJobWizard.tsx`); "About this file" listing a rename as decided on the new-job page after it was switched in the dialog (`JobDetail.tsx`, `aboutReading`); a With AI review suggestion announced as the assistant's (`utils/itemIssues.ts`). Tests: `NodeDetailPanel.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `utils/itemIssues.test.ts`. |
+| Tree-building rules after the wave 1 production probe (owner, 2026-11-26) | §11.2.6, §11.3.7, §12 | Ingestion: `leveling/tree_rules.py` (R2 judged by what the file states, R1 code repair, R6 cut), `leveling/parent_choice.py` + prompt `choose_parent.v1` (R1, AI places), `distillation/title.py` (`shortened_title`, 255), `leveling/requirement_titles.py` (shortened titles to AI), `document_grammar.py` (proposals apply unless undone; markers always left out). Contract: title `maxLength` 255, mark "No requirement under it", warning `parent_chosen`. Frontend: `FileStudyPanel.tsx` (Undo / Apply again), `utils/buildPreview.ts` (`isApplied`, `appliedCounts`), `BuildPreview.tsx`, `AboutFilePanel.tsx`, `ParentSections.tsx`, `JobDetail.tsx` (chip), `utils/warningKinds.ts`. Tests: `test_tree_rules.py`, `test_grammar_builder_rules.py`, `test_file_rules.py`, accuracy scorecard (`states_types`), `buildPreview.test.ts`, `FileStudyPanel.test.tsx`. |
 | Toasts above a docked bar; no comment text on screen (2026-11-26) | `components/ToastProvider.tsx` (the toast region moves to `bottom-28`, `bottom-44` on a phone, while the page has a `data-dock` bar: the review's Write bar and the new job's Start bar), `WriteBar.tsx` and `NewJobWizard.tsx` (`data-dock`), `ProposalReview.tsx` (the "// Sticky…" text is now a JSX comment) | Measured live: the acceptance toast ends above the Write bar at 1440 (bar top 802) and the toast region ends at 668 at 390 (bar top 702). Tests: `ToastProvider.test.tsx`, `WriteBar.test.tsx`, `ProposalReview.test.tsx`. |
 | Icon-only type in wide review rows; "Stop waiting" code removed (2026-11-26) | `components/DiffTree.tsx` (the wide row's `WorkItemTypeBadge` is `iconOnly`, as the narrow row was: glyph and colour, the type read by assistive tech and in the row's description); `NewJobWizard.tsx`, `FileReadingCard.tsx`, `FileRulesCard.tsx` (the unreachable Stop waiting / Read now handlers, the study's stopped state and `cancelRules`) | Closes the last two items from the walk. Tests: `DiffTree.test.tsx` (wide row), `FileRulesCard.test.tsx` and `FileReadingCard.test.tsx` (the Stop waiting cases now assert there is none; the "after stopping" case is removed with the feature). |

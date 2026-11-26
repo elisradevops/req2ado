@@ -46,6 +46,52 @@ def test_a_full_stop_is_dropped_and_another_form_of_a_word_is_grounded() -> None
     assert checked_title("Terrestrial tuner receives DVB-T2 broadcasts.", STATEMENT) == "Terrestrial tuner receives DVB-T2 broadcasts"
 
 
+# Owner probe (2026-11-26): 7 of 121 TV twin requirements kept their whole sentence because code refused the model's title. Titles that
+# say the requirement in another form of its own words must pass; a word the requirement does not state must not.
+@pytest.mark.parametrize(
+    ("statement", "title"),
+    [
+        ("The receiver shall connect to a home network over Ethernet at 100 Mbit/s.", "Ethernet connection at 100 Mbit/s"),
+        ("The television set shall be stored at temperatures from -20 °C to 60 °C.", "Storage from -20 °C to 60 °C"),
+        ("The remote shall suppress repeated volume steps while the button is held for longer than 500 ms.", "Volume repeat suppression while held"),
+        ("The television set shall operate at altitudes up to 3 000 m.", "Operation at altitudes up to 3000 m"),
+        ("The remote shall pair again when the Home and Back keys are held together for 3 s.", "Re-pairing by holding Home and Back for 3 s"),
+        ("The television set shall not exceed 70 °C on any surface a user can touch.", "Touchable surfaces not to exceed 70 °C"),
+    ],
+)
+def test_another_form_of_the_requirements_own_words_is_grounded(statement: str, title: str) -> None:
+    assert checked_title(title, statement) == title
+
+
+@pytest.mark.parametrize(
+    ("statement", "title"),
+    [
+        ("The television set shall not exceed 70 °C on any surface a user can touch.", "Maximum surface temperature of 70 °C"),  # new words
+        ("The television set shall operate at altitudes up to 3 000 m.", "Operation at altitudes up to 4000 m"),  # another number
+        ("The receiver shall play audio description when the broadcaster sends it and the user has turned it on.", "Audio description on request"),
+    ],
+)
+def test_a_word_or_value_the_requirement_does_not_state_is_still_refused(statement: str, title: str) -> None:
+    assert checked_title(title, statement) is None
+
+
+def test_a_title_that_only_repeats_its_parents_title_keeps_the_extracted_title() -> None:
+    """dsp_6 (probe, 2026-11-26): a requirement under "Picture modes" titled "Picture modes" tells a reader nothing its parent does not."""
+    from app.canonical.model import SourceRef
+    from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
+
+    def node(local_id, kind, parent, title, description):  # noqa: ANN001, ANN202
+        ref = SourceRef(document_path="x.pdf", start_offset=0, end_offset=1)
+        return WorkItemNode(local_id=local_id, type=kind, parent_local_id=parent, title=title, description=description, source_ref=ref,
+                            mode=WorkItemMode.BASELINE, verbatim=kind == WorkItemType.REQUIREMENT)  # fmt: skip
+
+    statement = "The receiver shall offer the picture modes listed below."
+    nodes = [node("f", WorkItemType.FEATURE, None, "Picture modes", ""), node("r", WorkItemType.REQUIREMENT, "f", statement, statement)]
+    assert write_requirement_titles(nodes, _Titles({"r": "Picture modes"}), []) == 0
+    assert nodes[1].title == statement
+    assert write_requirement_titles(nodes, _Titles({"r": "Receiver offers the listed picture modes"}), []) == 1
+
+
 def _requirements():
     from app.canonical.model import SourceRef
     from app.workitem.model import WorkItemMode, WorkItemNode
@@ -213,3 +259,12 @@ def test_an_answer_with_no_usable_title_keeps_the_extracted_titles_and_says_so()
     assert [n.title for n in nodes] == titles
     assert [w.kind.value for w in warnings] == ["enhancement_call_failed"]
     assert warnings[0].node_ids == ["r1", "r2"]
+
+
+def test_why_titles_were_refused_is_logged_as_numbers_only(caplog) -> None:
+    nodes = _requirements()
+    client = _Titles({"r1": "Terrestrial tuner receives DVB-T2 broadcasts", "r2": "Lightweight ergonomic remote"})
+    with caplog.at_level("INFO", logger="app.leveling.requirement_titles"):
+        write_requirement_titles(nodes, client, [])
+    lines = [r.getMessage() for r in caplog.records if "Short titles" in r.getMessage()]
+    assert lines == ["Short titles: 1 written, 1 kept from the text (ungrounded 1)"]

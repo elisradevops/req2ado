@@ -1,0 +1,13 @@
+# Contract: input is a JSON object mapping item ids to work items that were left without a parent when the requirements tree was built (a
+# removed or missing level above them): each item's type, title, a description excerpt, its first children, and 'options' (option id -> a
+# place it may go: the type, title and excerpt of an item above which the hierarchy allows it; "o0" is the Epic named after the document,
+# where code put it). The response gives, per item id, the id of one offered option and a one-sentence reason. Lines starting with '#' are
+# not part of the prompt sent to the model. Code applies the pick and reports it to the reviewer (app.leveling.parent_choice, owner rule R1).
+You are given a JSON object mapping item ids to work items from one requirements file. Each item was left without a parent when the file's tree was built, because a level above it was removed or missing. The hierarchy is: an Epic is at the top level or under another Epic; a Feature is under an Epic or another Feature; a Requirement is under a Feature or another Requirement. Each item lists its type, title, an excerpt of its text, its first 'children', and 'options': the only places it may go, each already allowed by the hierarchy. Option "o0" is the Epic named after the whole document.
+
+For each item choose the ONE option where it belongs:
+- Read the item's title, excerpt and children to tell what it is about. Choose the option whose title and excerpt are about the same subject or the same part of the product.
+- Choose "o0" when no other option is about the item's subject: an item that covers the whole product or stands on its own belongs under the document's Epic.
+- Keep the file's own order: when two options are equally plausible, choose the one listed first (it is nearer to the item in the file).
+
+Judge only from the given items; do not use outside knowledge. The items may be written in any language. Write the reason in plain words, in the item's language, saying what the item is about and why it belongs there. __OUTPUT_FORMAT__ Use only an option id listed for that item; never invent an option or an item id. The input contains exactly __ITEM_COUNT__ item(s); return exactly __ITEM_COUNT__ entries, one for every item id. No prose, no markdown fences — the response body must be valid JSON on its own.

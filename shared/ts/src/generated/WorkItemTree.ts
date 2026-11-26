@@ -95,9 +95,9 @@ export interface WorkItemNode {
    */
   requirement_type?: string | null;
   /**
-   * Review marks read from a Requirement's own text, for filtering in the review. Never written to Azure DevOps.
+   * Review marks for filtering in the review, never written to Azure DevOps: read from a Requirement's own text (TBD, Should, Will, No obligation), or set on an Epic or Feature the file states with content but no requirement under it.
    */
-  derived_marks?: ('TBD' | 'Should' | 'Will' | 'No obligation')[];
+  derived_marks?: ('TBD' | 'Should' | 'Will' | 'No obligation' | 'No requirement under it')[];
   /**
    * With AI review's suggested wording for this item. Offered to the reviewer, never applied by itself; null when there is none.
    */
@@ -185,6 +185,7 @@ export interface IntegrityWarning {
     | 'bridge_feature_synthesized'
     | 'roots_regrouped'
     | 'catchall_epic_wrap'
+    | 'parent_chosen'
     | 'near_duplicate_conflict'
     | 'conflict_judgment_skipped'
     | 'output_truncated'

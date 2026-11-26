@@ -86,6 +86,7 @@ from app.survey.keyed_calls import (
 )
 from app.survey.keyed_specs import (
     AUTHOR_CONTENT_SPEC,
+    CHOOSE_PARENT_SPEC,
     HIERARCHY_FIX_SPEC,
     KB_RELEVANCE_SPEC,
     PAIR_VERDICTS,
@@ -2032,6 +2033,36 @@ class OrchestratorLlmClient:
             after, language_blocks = self._language()
             call = build_call(
                 "suggest_hierarchy_fixes",
+                markers={
+                    "item_count": str(len(payload)),
+                    "output_format": describe_output(spec, mode),
+                },
+                blocks=[*language_blocks, DataBlock("source", json.dumps(payload, ensure_ascii=False))],
+                after=after,
+            )
+            return self._chat_json(call, self._params(schema=schema_for(spec, mode)), user_id=user_id)
+
+        def offered(item_id: str, entry: object) -> bool:
+            options = items_by_id.get(item_id, {}).get("options", {})
+            return (
+                isinstance(entry, dict)
+                and entry.get("option") in options
+                and isinstance(entry.get("reason"), str)
+                and bool(entry["reason"].strip())
+            )
+
+        return run_keyed(send, items_by_id, spec, model=self._model, accept=offered)
+
+    def choose_parents(self, items_by_id: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
+        """Backs ParentChoiceClient (app.leveling.parent_choice): per item the build left without a parent, the id of one of the places code
+        offered for it and a one-sentence reason. Returns item id -> {"option", "reason"} for every item that came back naming one of its own
+        options (one bounded retry of the rest); an item still absent keeps code's placement."""
+        spec = CHOOSE_PARENT_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            after, language_blocks = self._language()
+            call = build_call(
+                "choose_parent",
                 markers={
                     "item_count": str(len(payload)),
                     "output_format": describe_output(spec, mode),

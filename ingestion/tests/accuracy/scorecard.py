@@ -34,6 +34,11 @@ class Score:
     type_labels_in_titles: list[str] = field(default_factory=list)
     lost_text: list[str] = field(default_factory=list)
     lost_formatting: list[str] = field(default_factory=list)
+    # R2 / approach C: a planned item (an Epic or Feature with no requirement below it) made an item when the file does not state types,
+    # left out without being reported, or kept without its review mark.
+    planned_made_items: list[str] = field(default_factory=list)
+    planned_not_reported: list[str] = field(default_factory=list)
+    planned_without_mark: list[str] = field(default_factory=list)
 
     def problems(self) -> dict[str, list[str]]:
         return {
@@ -51,8 +56,29 @@ def _title(node) -> str | None:
     return (node.source_title or node.title) if node is not None else None
 
 
-def score(tree, *, rich: bool) -> Score:
+def planned_items(truth: list[TruthItem]) -> list[TruthItem]:
+    """The truth's Epics and Features with no Requirement anywhere below them (their subtree: the items after them, deeper, in order)."""
+    planned = []
+    for i, item in enumerate(truth):
+        if item.type == "Requirement":
+            continue
+        below = []
+        for later in truth[i + 1 :]:
+            if later.level <= item.level:
+                break
+            below.append(later)
+        if not any(b.type == "Requirement" for b in below):
+            planned.append(item)
+    return planned
+
+
+def score(tree, *, rich: bool, states_types: bool = True) -> Score:
+    from app.leveling.tree_rules import NO_REQUIREMENT
+
     truth: list[TruthItem] = ladder_items()
+    planned = planned_items(truth)
+    if not states_types:
+        truth = [t for t in truth if t not in planned]
     result = Score(
         expected=Counter(t.type for t in truth), produced=Counter(n.type.value for n in tree.nodes)
     )
@@ -60,6 +86,18 @@ def score(tree, *, rich: bool) -> Score:
     by_key: dict[str, list] = {}
     for node in tree.nodes:
         by_key.setdefault(key(_title(node)), []).append(node)
+    reported = " ".join(
+        key(p["text"]) for w in tree.warnings if w.kind.value == "front_matter_left_out" for p in (w.detail or {}).get("parts", [])
+    )
+    for item in planned:
+        nodes = by_key.get(key(item.title), [])
+        if states_types:
+            if nodes and NO_REQUIREMENT not in nodes[0].derived_marks:
+                result.planned_without_mark.append(item.title[:50])
+        elif nodes:
+            result.planned_made_items.append(item.title[:50])
+        elif key(item.title) not in reported:
+            result.planned_not_reported.append(item.title[:50])
     for item in truth:
         candidates = by_key.get(key(item.title), [])
         if not candidates:

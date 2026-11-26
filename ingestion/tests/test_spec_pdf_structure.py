@@ -387,7 +387,7 @@ def test_the_counts_tool_reports_numbers_only_never_the_documents_text(tmp_root:
     counts = module.counts_for(path)
     assert counts["items"] == {"Epic": 3, "Feature": 3, "Requirement": 7}
     assert counts["requirements_with_id"] == 7 and counts["requirements_with_several_ids"] == 0
-    assert counts["contents_like_items"] == 0 and counts["numbered_sections_without_item"] == 0
+    assert counts["contents_like_items"] == 0 and counts["numbered_sections_lost"] == 0
     dumped = json.dumps(counts).casefold()
     for text in [*truth.requirements, *truth.front_matter, *truth.section_titles]:
         assert _norm(text)[:20] not in dumped

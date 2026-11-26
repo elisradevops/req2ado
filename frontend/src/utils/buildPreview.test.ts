@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReadingDecision, ReadingOutlineItem } from '../api/jobs';
-import { applyDecisions, decisionPairs } from './buildPreview';
+import { appliedCounts, applyDecisions, decisionPairs } from './buildPreview';
 
 // The TV twin's shape: a generic root, a wrapper holding one section, and a generically named area.
 const outline: ReadingOutlineItem[] = [
@@ -17,27 +17,36 @@ const proposals: ReadingDecision[] = [
 ];
 
 describe('applyDecisions', () => {
-  it('keeps the file original while nothing is decided, and marks the open proposals', () => {
+  // Owner rule R4 (2026-11-26): the study's proposals apply unless the user undoes them before Start.
+  it('applies every proposal while nothing is decided: renames shown, a removed level gone with its children moved up', () => {
     const { rows, removed } = applyDecisions(outline, proposals, {});
-    expect(rows.map((r) => [r.title, r.depth, r.open])).toEqual([
-      ['Requirements', 0, true],
-      ['General', 1, true],
-      ['Product family', 2, false],
-      ['Design and construction', 1, true],
-      ['Environmental conditions', 2, false],
-    ]);
-    expect(removed).toEqual([]);
-  });
-
-  it('shows an accepted rename and moves the children of an accepted removal up a level', () => {
-    const { rows, removed } = applyDecisions(outline, proposals, { b1: 'accept', b2: 'accept', b4: 'keep' });
-    expect(rows.map((r) => [r.title, r.depth, r.was, r.open])).toEqual([
+    expect(rows.map((r) => [r.title, r.depth, r.was, r.undone])).toEqual([
       ['Vireo Television Set (VTS)', 0, 'Requirements', false],
       ['Product family', 1, null, false],
-      ['Design and construction', 1, null, false],
+      ['Environment and safety', 1, 'Design and construction', false],
       ['Environmental conditions', 2, null, false],
     ]);
     expect(removed).toEqual(['General']);
+  });
+
+  it('keeps the file original for each proposal the user undid, and marks it', () => {
+    const { rows, removed } = applyDecisions(outline, proposals, { b1: 'accept', b2: 'keep', b4: 'keep' });
+    expect(rows.map((r) => [r.title, r.depth, r.was, r.undone])).toEqual([
+      ['Vireo Television Set (VTS)', 0, 'Requirements', false],
+      ['General', 1, null, true],
+      ['Product family', 2, null, false],
+      ['Design and construction', 1, null, true],
+      ['Environmental conditions', 2, null, false],
+    ]);
+    expect(removed).toEqual([]);
+  });
+});
+
+describe('appliedCounts', () => {
+  it('takes a removed level off the counts the study made of the original file, and puts it back when undone', () => {
+    const reading = { epics: 3, features: 2, decisions: proposals, outline } as unknown as Parameters<typeof appliedCounts>[0];
+    expect(appliedCounts(reading, {})).toEqual({ epics: 2, features: 2 });
+    expect(appliedCounts(reading, { b2: 'keep' })).toEqual({ epics: 3, features: 2 });
   });
 });
 

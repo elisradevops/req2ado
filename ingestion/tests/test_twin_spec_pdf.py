@@ -88,13 +88,14 @@ def test_an_accepted_rename_names_the_root_after_the_cover(tmp_root: str) -> Non
     rename = Proposal(block_id, "rename", "Greenhouse Climate Controller (GCC)", "Named after the cover.")
     codes = ("gen_2", "enc_1", "mec_3")
     undecided = FileRulebook(document=DocumentRules(requirement_codes=codes, proposals=(rename,)))
-    accepted = FileRulebook(document=DocumentRules(requirement_codes=codes, proposals=(rename,), proposal_decisions=((block_id, "accept"),)))
+    kept = FileRulebook(document=DocumentRules(requirement_codes=codes, proposals=(rename,), proposal_decisions=((block_id, "keep"),)))
 
     def root(rulebook) -> str:
         return next(n.title for n in build_baseline_tree(doc, rulebook).nodes if n.parent_local_id is None)
 
-    assert root(undecided) == "Requirements"
-    assert truth.epic_title_contains.lower() in _norm(root(accepted))
+    # Proposals apply unless the user undoes them before Start (owner rule R4, 2026-11-26).
+    assert truth.epic_title_contains.lower() in _norm(root(undecided))
+    assert root(kept) == "Requirements"
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -184,11 +185,14 @@ def test_every_requirement_section_is_a_feature(mode: str, tmp_root: str) -> Non
     nodes = trees[mode].nodes
     features = {_number(n) for n in nodes if n.type.value == "Feature"}
     items = {_number(n) for n in nodes}
-    # A section that holds requirements (or is empty) is a Feature; a section made only of sections is an item too (an Epic, or a
-    # Feature under a Feature): the ladder, owner decision 2026-11-25.
-    missing = [s.number for s in truth.sections if (s.reqs or s.kind == "empty") and s.number not in features]
+    # A section that holds requirements is a Feature; a section made only of sections is an item too (an Epic, or a Feature under a
+    # Feature): the ladder, owner decision 2026-11-25. An empty section is never an item (owner rule R2, 2026-11-26).
+    missing = [s.number for s in truth.sections if s.reqs and s.number not in features]
     lost = [s.number for s in truth.sections if s.kind == "feature" and s.number not in items]
-    assert not missing and not lost, f"{mode}: sections with no Feature: {missing}; sections with no item: {lost}"
+    empty_items = [s.number for s in truth.sections if s.kind == "empty" and s.number in items]
+    assert not missing and not lost and not empty_items, (
+        f"{mode}: sections with no Feature: {missing}; sections with no item: {lost}; empty sections made items: {empty_items}"
+    )
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -237,7 +241,7 @@ def test_a_left_out_part_reports_all_its_pages(mode: str, tmp_root: str) -> None
     report = next(w for w in trees[mode].warnings if w.kind.value == "front_matter_left_out")
     listing = next(p for p in report.detail["parts"] if p["text"] == "3 REQUIREMENT IDENTITIES")
     assert listing.get("pageEnd", listing["page"]) > listing["page"]  # the listing runs over several pages
-    assert "-" in report.raw.split("3 REQUIREMENT IDENTITIES")[1][:12]
+    assert listing["pageEnd"] in report.detail["pages"]
 
 
 @pytest.mark.parametrize("mode", MODES)

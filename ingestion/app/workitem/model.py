@@ -199,7 +199,7 @@ class WorkItemNode(BaseModel):
     local_id: str
     type: WorkItemType
     parent_local_id: str | None
-    title: str = Field(max_length=256)
+    title: str = Field(max_length=255)  # the Azure DevOps limit (owner rule R6)
     # The heading text this node was built from, before any model pass rewrote its title. In-process only (never
     # serialized, so no contract change): whatever must not depend on the model's wording, such as grouping root
     # sections, reads this instead of `title`. None for nodes the model itself created.
@@ -207,6 +207,11 @@ class WorkItemNode(BaseModel):
     # Built by the document's own grammar (leveling/document_grammar.py): its text is the document's, word for word, and no model pass
     # rewrites it. In-process only, like source_title.
     verbatim: bool = Field(default=False, exclude=True)
+    # The file itself states this item's type (a tracker export's type column, a heading labelled "Feature:"), and how many of its rows of
+    # types req2ado does not import (Test Cases) sit under it: an item the file states with content is kept even with no requirement below
+    # it (app.leveling.tree_rules). In-process only, like source_title.
+    type_stated: bool = Field(default=False, exclude=True)
+    unimported_children: int = Field(default=0, exclude=True)
     # The marks a reviewer filters by, read from a requirement's own text (TBD, Should, Will, No obligation): never written to Azure DevOps
     # and never mixed with the file's own tags (file_tags).
     derived_marks: list[str] = Field(default_factory=list)
@@ -407,6 +412,9 @@ class WarningKind(StrEnum):
     BRIDGE_FEATURE_SYNTHESIZED = "bridge_feature_synthesized"
     ROOTS_REGROUPED = "roots_regrouped"
     CATCHALL_EPIC_WRAP = "catchall_epic_wrap"
+    # Items the build left without a parent, placed by the model under the parent it chose among the ones code offered
+    # (app.leveling.parent_choice, owner rule R1): the reviewer checks each move.
+    PARENT_CHOSEN = "parent_chosen"
     NEAR_DUPLICATE_CONFLICT = "near_duplicate_conflict"
     # A near-duplicate cluster the conflict judge could not be asked about (its model call failed, retry and split
     # included): the items were NOT checked for conflicting values and a reviewer should compare them.
@@ -589,6 +597,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.BRIDGE_FEATURE_SYNTHESIZED: WarningSeverity.AUTO_FIXED,
     WarningKind.ROOTS_REGROUPED: WarningSeverity.AUTO_FIXED,
     WarningKind.CATCHALL_EPIC_WRAP: WarningSeverity.AUTO_FIXED,
+    WarningKind.PARENT_CHOSEN: WarningSeverity.NEEDS_REVIEW,
     WarningKind.NEAR_DUPLICATE_CONFLICT: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CONFLICT_JUDGMENT_SKIPPED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.OUTPUT_TRUNCATED: WarningSeverity.PIPELINE_ISSUE,
