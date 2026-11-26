@@ -5320,6 +5320,42 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     expect(await screen.findByText('Title r3')).toBeInTheDocument();
   });
 
+  it('offers "Suggestion" for items with a suggestion waiting and "Left out" for items not in the write, each narrowing the tree', async () => {
+    await mount({
+      id: 'chips-2',
+      dryRunDiff: [
+        req('r1', { suggestion: { id: 's1', proposedTitle: 'T', proposedDescription: 'D', decision: 'pending', origin: 'ai_review' } }),
+        req('r2', { excluded: true }),
+        req('r3'),
+      ],
+      warnings: [],
+    });
+    const suggestion = screen.getByRole('button', { name: 'Suggestion · 1' });
+    const leftOut = screen.getByRole('button', { name: 'Left out · 1' });
+    await userEvent.click(suggestion);
+    expect(screen.getByText('Title r1')).toBeInTheDocument();
+    expect(screen.queryByText('Title r3')).not.toBeInTheDocument();
+    await userEvent.click(leftOut);
+    expect(leftOut).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Title r2')).toBeInTheDocument();
+    expect(screen.queryByText('Title r1')).not.toBeInTheDocument();
+  });
+
+  it('shows how the file was read: "About this file" in the header with its decisions, and "Spelling fixed" on the item whose heading was corrected', async () => {
+    vi.spyOn(jobsApi, 'getJobFileReading').mockResolvedValue({
+      reading: {
+        kind: 'requirements_spec', coverTitle: null, requirements: 1, withIds: 1, epics: 1, features: 0, outline: [], outlineMore: 0,
+        decisions: [{ headingId: 'b9', action: 'drop_wrapper', title: 'Requirements', newTitle: null, reason: 'Only groups.', decision: 'accept' }],
+        fixes: [{ headingId: 'b4', from: 'Enclousure', to: 'Enclosure' }], examples: [], leftOut: [], context: [],
+      },
+      codes: ['ENC-1'],
+    });
+    await mount({ id: 'reading-1', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Enclosure' })], warnings: [] });
+    expect(await screen.findByText('Spelling fixed')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'About this file' }));
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Remove the level “Requirements”: accepted.');
+  });
+
   it('names the next step, "Fix 2 items", while a fix item is open: states the reason in text, and never opens the write dialog', async () => {
     const write = await mount({ id: 'gate-1', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
     expect(write).toHaveAccessibleName('Fix 2 items');

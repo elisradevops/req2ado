@@ -1251,3 +1251,19 @@ describe('NodeDetailDialog: reviewing an assistant suggestion beside the origina
     });
   });
 });
+
+describe('NodeDetailDialog: an Epic\'s decision and what is under it', () => {
+  const epic = { localId: 'g_b4', parentLocalId: null, type: 'Epic', title: 'Power', description: '', action: 'create', customerId: null, tags: [] } as const;
+  const feature = { ...epic, localId: 'f1', parentLocalId: 'g_b4', type: 'Feature', title: 'Supply' } as const;
+  const decisions = [{ headingId: 'b4', action: 'rename' as const, title: 'General', newTitle: 'Power', reason: 'All about power.', decision: 'accept' as const }];
+
+  it('switches the rename through a title edit and opens an item listed under it', () => {
+    const onSave = vi.fn();
+    const onOpenEntry = vi.fn();
+    renderDialog({ entry: { ...epic }, jobStatus: 'diff_ready', onSave, onOpenEntry, decisions, diffByLocalId: { g_b4: { ...epic }, f1: { ...feature } } });
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+    expect(onSave).toHaveBeenCalledWith('g_b4', { title: 'General', description: '' });
+    fireEvent.click(screen.getByRole('button', { name: /Supply/ }));
+    expect(onOpenEntry).toHaveBeenCalledWith('f1');
+  });
+});

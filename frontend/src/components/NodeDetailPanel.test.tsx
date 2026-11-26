@@ -1532,3 +1532,14 @@ describe('NodeDetailPanel: what the file states', () => {
     expect(screen.queryByTestId('file-details')).toBeNull();
   });
 });
+
+describe('NodeDetailPanel: an Epic or Feature with no text of its own', () => {
+  const feature: DryRunDiffEntry = { localId: 'f1', parentLocalId: null, type: 'Feature', title: 'Supply', description: '', action: 'create', customerId: null, tags: [] };
+
+  it('says its description is empty because the file has none, and shows its own sections in place of the coverage line', () => {
+    renderPanel(<NodeDetailPanel entry={feature} parentSlot={<p>Under it slot</p>} descendantCounts={{ epics: 0, features: 0, requirements: 4 }} />);
+    expect(screen.getByTestId('empty-description')).toHaveTextContent('Empty. The file has no text of its own for this Feature, so no description is written.');
+    expect(screen.getByText('Under it slot')).toBeInTheDocument();
+    expect(screen.queryByText(/^Covers /)).toBeNull();
+  });
+});

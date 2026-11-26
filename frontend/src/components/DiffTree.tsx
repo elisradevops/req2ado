@@ -499,10 +499,13 @@ export function DiffTree({
   onMove,
   canMove,
   writtenAdoIds,
+  rowNotes,
 }: {
   entries: DryRunDiffEntry[];
   // Azure DevOps id of each item already written, by localId (a finished or partly written job). Shown as a link in the Status column.
   writtenAdoIds?: Record<string, number>;
+  // Quiet words a row adds after its marks, by localId ("Spelling fixed", "Accepted without ID"), from the job's reading and warnings.
+  rowNotes?: Record<string, string[]>;
   selectedId: string | null;
   onSelect: (localId: string) => void;
   // Opens the details dialog for a node -- distinct from onSelect (which
@@ -966,6 +969,7 @@ export function DiffTree({
               orgUrl,
               project,
               writtenAdoIds,
+              rowNotes,
               canMove: !!canMove,
               isFiltering,
               collapsedIds,
@@ -1021,6 +1025,7 @@ function DiffTreeRow({
   orgUrl,
   project,
   writtenAdoIds,
+  rowNotes,
   canMove,
   narrow,
   rowIdPrefix,
@@ -1047,6 +1052,8 @@ function DiffTreeRow({
   orgUrl?: string | null;
   project?: string | null;
   writtenAdoIds?: Record<string, number>;
+  // Quiet words a row adds after its marks, by localId ("Spelling fixed", "Accepted without ID"), from the job's reading and warnings.
+  rowNotes?: Record<string, string[]>;
   canMove: boolean;
   // below md (one query in DiffTree, so header, rows and row height always flip together)
   narrow: boolean;
@@ -1267,9 +1274,11 @@ function DiffTreeRow({
     </>
   );
   // TBD, Should, Will, No obligation: quiet words, read from the requirement's own text, for the filter chips above the tree. Never written.
-  const marksEl = entry.derivedMarks?.length ? (
-    <span className="flex-none text-xs text-ink-3" title="Read from the requirement's text, for filtering. Never written to Azure DevOps." data-testid="row-marks">
-      {entry.derivedMarks.join(' · ')}
+  // Then the row's notes ("Spelling fixed", "Accepted without ID"): just as quiet.
+  const rowWords = [...(entry.derivedMarks ?? []), ...(rowNotes?.[entry.localId] ?? [])];
+  const marksEl = rowWords.length ? (
+    <span className="flex-none text-xs text-ink-3" title="Read from the item's text or decided in this review. Never written to Azure DevOps." data-testid="row-marks">
+      {rowWords.join(' · ')}
     </span>
   ) : null;
   const excludedEl = (

@@ -2034,6 +2034,28 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * How the file was read for this job (the new-job page's verdict, decisions and fixes, ingestion's app.study.reading), from the stored
+   * rulebook row the job was built from: same user, same file, same rulebook hash. The review shows it in "About this file", on each
+   * Epic/Feature's decision and as "Spelling fixed". Null for a job built without a rulebook or a row stored before readings were kept.
+   */
+  async getFileReading(id: string): Promise<{ reading: Record<string, unknown> | null; codes: string[] }> {
+    const job = await this.prisma.job.findUnique({
+      where: { id },
+      select: { userId: true, sourceHash: true, fileRulebookHash: true, fileRulebook: true },
+    });
+    if (!job?.fileRulebookHash || !job.userId) return { reading: null, codes: [] };
+    const row = await this.prisma.fileRulebook.findFirst({
+      where: { userId: job.userId, fileSha256: job.sourceHash, hash: job.fileRulebookHash },
+      orderBy: { createdAt: 'desc' },
+      select: { details: true },
+    });
+    const reading = (row?.details as { reading?: Record<string, unknown> } | null)?.reading ?? null;
+    if (!reading) return { reading: null, codes: [] };
+    const codes = (job.fileRulebook as { document?: { grammar?: { requirement_codes?: unknown } } } | null)?.document?.grammar?.requirement_codes;
+    return { reading, codes: Array.isArray(codes) ? codes.filter((c): c is string => typeof c === 'string') : [] };
+  }
+
+  /**
    * The reviewer changes an item's type within the ladder (owner decision, 2026-11-25): only to a type the item's parent allows for it
    * (canNest; at the top only an Epic) and that allows each of its children, only for an item this job will create (a reused or skipped item is an
    * existing work item, not this job's to retype), and never once this job has written it. The entry keeps the type it had first

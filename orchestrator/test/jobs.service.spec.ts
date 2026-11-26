@@ -8363,3 +8363,29 @@ describe('JobsService.changeDiffEntryType', () => {
     await expect(makeService([epic, empty]).changeDiffEntryType('job-1', 'f2', 'Task')).rejects.toThrow("type must be");
   });
 });
+
+describe('JobsService.getFileReading', () => {
+  const reading = { kind: 'requirements_spec', requirements: 3, decisions: [], fixes: [{ headingId: 'b7', from: 'Enclousure', to: 'Enclosure' }] };
+  function serviceWith(job: Record<string, unknown> | null, row: Record<string, unknown> | null) {
+    const findFirst = jest.fn().mockResolvedValue(row);
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(job) }, fileRulebook: { findFirst } };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), findFirst };
+  }
+
+  it('returns the reading stored with the exact rulebook the job was built from, and the code shape it learned', async () => {
+    const { service, findFirst } = serviceWith(
+      { userId: 'u1', sourceHash: 'sha', fileRulebookHash: 'rh', fileRulebook: { document: { grammar: { requirement_codes: ['PWR-1', 'PWR-2'] } } } },
+      { details: { approximate: true, reading } },
+    );
+    await expect(service.getFileReading('job-1')).resolves.toEqual({ reading, codes: ['PWR-1', 'PWR-2'] });
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u1', fileSha256: 'sha', hash: 'rh' } }));
+  });
+
+  it('returns no reading for a job built without a rulebook, or when the stored row has none', async () => {
+    const none = serviceWith({ userId: 'u1', sourceHash: 'sha', fileRulebookHash: null, fileRulebook: null }, null);
+    await expect(none.service.getFileReading('job-1')).resolves.toEqual({ reading: null, codes: [] });
+    expect(none.findFirst).not.toHaveBeenCalled();
+    const old = serviceWith({ userId: 'u1', sourceHash: 'sha', fileRulebookHash: 'rh', fileRulebook: {} }, { details: { approximate: false } });
+    await expect(old.service.getFileReading('job-1')).resolves.toEqual({ reading: null, codes: [] });
+  });
+});

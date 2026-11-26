@@ -45,6 +45,8 @@ import {
   type JobSummaryReport,
   type MoveDiffEntryInput,
   type ValidationResult,
+  getJobFileReading,
+  type FileReading,
 } from '../api/jobs';
 import { appendNarration } from '../utils/narrationLog';
 import { outcomeOf, outcomesFromHistory, reasonOf, reasonsFromHistory, type FigureOutcome } from '../utils/figureOutcomes';
@@ -58,6 +60,7 @@ import { useOrgUrl } from '../store/authStore';
 import { usePageLabelStore } from '../store/pageLabelStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
+import { AboutFilePanel } from '../components/AboutFilePanel';
 import { ProgressBanner, PHASE_SUBLABEL } from '../components/ProgressBanner';
 import { ActivityFeed, useActivityLog } from '../components/ActivityFeed';
 import { Disclosure } from '../ui/Disclosure';
@@ -146,6 +149,7 @@ function truncateForDisplay(text: string): string {
 
 // The review marks, in the order the filter chips show them (owner decision, 2026-11-25: filters only, never written).
 const REVIEW_MARKS = ['TBD', 'Should', 'Will', 'No obligation'];
+const MARK_TIP = "Read from the requirements' own text. For filtering only; never written to Azure DevOps.";
 
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -382,6 +386,26 @@ export function JobDetail(): React.ReactElement {
   const [reviewGroup, setReviewGroup] = useState<ReviewGroup | null>(null);
   // A review mark the tree is narrowed to (TBD, Should, Will, No obligation): read from the requirements' own text, for filtering only.
   const [markFilter, setMarkFilter] = useState<string | null>(null);
+  // How the file was read, from the rulebook the job was built from: "About this file", each Epic/Feature's decision and "Spelling fixed".
+  // Best effort by design: without it those parts are simply absent, and nothing else on the page depends on it.
+  const [fileReading, setFileReading] = useState<{ reading: FileReading | null; codes: string[] } | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  useEffect(() => {
+    if (!id) return undefined;
+    let stale = false;
+    setFileReading(null);
+    void (async () => {
+      try {
+        const answer = await getJobFileReading(id);
+        if (!stale) setFileReading(answer ?? null);
+      } catch {
+        // best effort (above): the review works without it
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [id]);
   // Set by a warning row's tree button (see CollapsibleWarnings'
   // onFocusKind): narrows the tree, bulk include/exclude and prev/next to
   // that warning kind's affected items. Another filter dimension, ANDed
@@ -2531,22 +2555,43 @@ export function JobDetail(): React.ReactElement {
   // The pressed group, unless it has emptied (its last item was decided or excluded): its chip is gone then, so the filter goes with it
   // rather than leaving a tree filtered to nothing and no control to clear it.
   const activeReviewGroup = reviewGroup && reviewGroups[reviewGroup].length > 0 ? reviewGroup : null;
-  // How many items carry each review mark, in the order the chips show them; a mark no item carries has no chip.
-  const markCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const entry of diff) for (const mark of entry.derivedMarks ?? []) counts.set(mark, (counts.get(mark) ?? 0) + 1);
-    return REVIEW_MARKS.filter((mark) => counts.has(mark)).map((mark) => ({ mark, count: counts.get(mark)! }));
+  // The review chips after the group chips (the approved mockup, 2026-11-25): each review mark, then "Suggestion" (a suggestion waiting for a
+  // decision) and "Left out" (left out itself or under a left-out parent, as the Write bar counts it). A chip with no item has no chip.
+  const markChips = useMemo(() => {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const cache = new Map<string, boolean>();
+    const idsOf = (keep: (entry: DryRunDiffEntry) => boolean): Set<string> => new Set(diff.filter(keep).map((entry) => entry.localId));
+    const chips = REVIEW_MARKS.map((mark) => ({ key: mark, ids: idsOf((entry) => !!entry.derivedMarks?.includes(mark)), tip: MARK_TIP }));
+    chips.push({ key: 'Suggestion', ids: idsOf((entry) => entry.suggestion?.decision === 'pending'), tip: 'A suggested wording waiting for your decision. Nothing is applied until you accept it.' });
+    chips.push({ key: 'Left out', ids: idsOf((entry) => isExcludedWithAncestors(entry, byId, cache)), tip: 'Left out of the write: unchecked, or under an unchecked parent.' });
+    return chips.filter((chip) => chip.ids.size > 0);
   }, [diff]);
-  const activeMark = markFilter && markCounts.some((m) => m.mark === markFilter) ? markFilter : null;
+  const activeChip = markFilter ? markChips.find((chip) => chip.key === markFilter) : undefined;
+  // Quiet words a row adds after its marks: "Spelling fixed" for a heading the study corrected (its item's local id is "g_" + the heading's
+  // block id), and "Accepted without ID" for the items of a counted acceptance the reviewer made.
+  const rowNotes = useMemo(() => {
+    const notes: Record<string, string[]> = {};
+    const add = (localId: string, note: string): void => {
+      notes[localId] = [...(notes[localId] ?? []), note];
+    };
+    for (const fix of fileReading?.reading?.fixes ?? []) add(`g_${fix.headingId}`, 'Spelling fixed');
+    for (const group of warningKindGroups) {
+      if (group.meta.ackPolicy === 'kind_counted' && group.records.length > 0 && group.records.every((record) => record.acknowledged)) {
+        for (const localId of group.nodeIds) add(localId, 'Accepted without ID');
+      }
+    }
+    return notes;
+  }, [fileReading, warningKindGroups]);
+  const activeMark = activeChip?.key ?? null;
   // A group filter, a warning focus and a mark together narrow to the items in all of them.
   const focusVisibleIds = useMemo(() => {
     const sets: Set<string>[] = [];
     if (warningVisibleIds) sets.push(warningVisibleIds);
     if (activeReviewGroup) sets.push(new Set(reviewGroups[activeReviewGroup].map((entry) => entry.localId)));
-    if (activeMark) sets.push(new Set(diff.filter((entry) => entry.derivedMarks?.includes(activeMark)).map((entry) => entry.localId)));
+    if (activeChip) sets.push(activeChip.ids);
     if (sets.length === 0) return undefined;
     return sets.reduce((acc, next) => new Set([...acc].filter((localId) => next.has(localId))));
-  }, [activeReviewGroup, reviewGroups, warningVisibleIds, activeMark, diff]);
+  }, [activeReviewGroup, reviewGroups, warningVisibleIds, activeChip]);
   const focusReviewedCount = focusWarning ? [...focusWarning.nodeIds].filter((localId) => reviewedIds.has(localId)).length : 0;
 
   // Per-item reason shown as a chip on tree rows while a warning is
@@ -3104,8 +3149,8 @@ export function JobDetail(): React.ReactElement {
                         </Tooltip>
                       );
                     })}
-                    {markCounts.map(({ mark, count }) => (
-                      <Tooltip key={mark} content="Read from the requirements' own text. For filtering only; never written to Azure DevOps.">
+                    {markChips.map(({ key: mark, ids, tip }) => (
+                      <Tooltip key={mark} content={tip}>
                         <button
                           type="button"
                           onClick={() => setMarkFilter(activeMark === mark ? null : mark)}
@@ -3115,7 +3160,7 @@ export function JobDetail(): React.ReactElement {
                             activeMark === mark ? 'border-accent-soft-border bg-accent-soft text-accent-ink' : 'border-hairline-strong bg-surface text-ink-2',
                           )}
                         >
-                          {mark} · {count}
+                          {mark} · {ids.size}
                         </button>
                       </Tooltip>
                     ))}
@@ -3205,6 +3250,7 @@ export function JobDetail(): React.ReactElement {
                     filterText={filterText}
                     focusNodeIds={focusVisibleIds}
                     reasonByLocalId={reasonByLocalId}
+                    rowNotes={rowNotes}
                     onToggleExclude={handleToggleExclude}
                     typeCatalog={typeCatalog ?? undefined}
                     categoryLabels={categoryLabels ?? undefined}
@@ -3254,6 +3300,8 @@ export function JobDetail(): React.ReactElement {
                 onAddChild={handleAddChild}
                 onMove={handleMoveEntry}
                 onChangeType={handleChangeType}
+                decisions={fileReading?.reading?.decisions}
+                onOpenEntry={setSelectedId}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}
                 hasNext={hasNextEntry}
@@ -3434,12 +3482,18 @@ export function JobDetail(): React.ReactElement {
       )}
       {/* Present from the start so the later text is announced; focus is never moved. */}
       <LiveStatusRegion message={arrival?.message ?? ''} />
+      {fileReading?.reading && <AboutFilePanel open={aboutOpen} onOpenChange={setAboutOpen} reading={fileReading.reading} codes={fileReading.codes} showDecisions />}
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
             <h1 className="truncate text-display">{sourceFilename || 'Job'}</h1>
             {status && <StatusChip status={status} partial={status === 'diff_ready' && createdItemCount > 0} />}
             {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
+            {fileReading?.reading && (
+              <Button variant="ghost" size="sm" onClick={() => setAboutOpen(true)}>
+                About this file
+              </Button>
+            )}
             {startedAt && (
               <Tooltip content={formatDateTime(startedAt)}>
                 <span className="text-xs text-ink-3">{formatDate(startedAt)}</span>

@@ -1327,6 +1327,13 @@ export class JobsController {
     return answer;
   }
 
+  // How the file was read for this job ("About this file", each Epic/Feature's decision, "Spelling fixed"); null when the job used no rulebook.
+  @Get(':id/file-reading')
+  async getFileReading(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ reading: Record<string, unknown> | null; codes: string[] }> {
+    await this.ownedJob(id, user);
+    return this.jobsService.getFileReading(id);
+  }
+
   @Get(':id/audit')
   async getAudit(
     @Param('id') id: string,

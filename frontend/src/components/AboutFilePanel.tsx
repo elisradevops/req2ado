@@ -13,6 +13,8 @@ interface Props {
   reading: FileReading;
   /** Example requirement codes the study confirmed (the rulebook's grammar), shown as the code shape. */
   codes: string[];
+  /** On the job page: list the decisions made on the new-job page (a removed level has no item of its own to show its decision on). */
+  showDecisions?: boolean;
 }
 
 function pages(part: FileReading['leftOut'][number]): string {
@@ -20,7 +22,7 @@ function pages(part: FileReading['leftOut'][number]): string {
   return part.pageEnd && part.pageEnd !== part.page ? ` · p${part.page}–${part.pageEnd}` : ` · p${part.page}`;
 }
 
-export function AboutFilePanel({ open, onOpenChange, reading, codes }: Props): React.ReactElement {
+export function AboutFilePanel({ open, onOpenChange, reading, codes, showDecisions }: Props): React.ReactElement {
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title="About this file" placement="right">
       <div className="flex flex-col gap-4 pb-4 text-sm" data-testid="about-file-panel">
@@ -55,6 +57,20 @@ export function AboutFilePanel({ open, onOpenChange, reading, codes }: Props): R
             <li>Under each requirement are its text, its lists and Notes, then its trace, set apart by a blank line.</li>
           </ul>
         </section>
+        {showDecisions && reading.decisions.length > 0 && (
+          <section className="flex flex-col gap-1.5" data-testid="about-decisions">
+            <h3 className="text-xs font-semibold text-ink-1">Decisions</h3>
+            <ul className="flex list-disc flex-col gap-1 pl-5 text-ink-2">
+              {reading.decisions.map((d) => (
+                <li key={d.headingId} dir="auto">
+                  {d.action === 'rename' ? `Rename “${d.title}” to “${d.newTitle}”` : `Remove the level “${d.title}”`}:{' '}
+                  {d.decision === 'accept' ? 'accepted' : 'kept as the file has it'}.
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-ink-3">A rename can still change in its item&apos;s dialog. To change a removed level, start a new job from this file.</p>
+          </section>
+        )}
         {reading.examples.length > 0 && (
           <section className="flex flex-col gap-1.5">
             <h3 className="text-xs font-semibold text-ink-1">Examples</h3>

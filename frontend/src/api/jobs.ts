@@ -649,6 +649,13 @@ export interface MoveDiffEntryInput {
   placement?: 'before' | 'after';
 }
 
+// How the file was read for a job (the new-job page's reading, from the rulebook the job was built from) and the code shape it learned; a
+// null reading for a job built without one.
+export async function getJobFileReading(jobId: string): Promise<{ reading: FileReading | null; codes: string[] }> {
+  const response = await httpClient.get(`/jobs/${jobId}/file-reading`);
+  return response.data;
+}
+
 // Changes an item's type within the ladder (owner decision, 2026-11-25). The server allows only a type the item's parent allows and that allows
 // its children, only for an item this job creates and has not written; Undo is the same call with the entry's `retypedFrom`.
 export async function changeDiffEntryType(jobId: string, localId: string, type: string): Promise<{ dryRunDiff: unknown }> {

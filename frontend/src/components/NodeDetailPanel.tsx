@@ -114,6 +114,7 @@ export function NodeDetailPanel({
   evidenceSlot,
   sourceSlot,
   moveSlot,
+  parentSlot,
   duplicateSlot,
   captionByFigureId,
   nameByFigureId,
@@ -194,6 +195,8 @@ export function NodeDetailPanel({
   // editability message -- visible without scrolling, the same reasoning
   // addChildSlot's own doc comment gives for not burying it at the bottom.
   moveSlot?: React.ReactNode;
+  // An Epic's or Feature's own sections (its decision, what is under it), in place of the one-line coverage sentence.
+  parentSlot?: React.ReactNode;
   // The "already exists" card for a skipped near-duplicate (or one created anyway), built by the caller for the same reason moveSlot is.
   duplicateSlot?: React.ReactNode;
   onSave?: (
@@ -895,10 +898,17 @@ export function NodeDetailPanel({
 
   const proposedBody = (
     <>
-      {!echoesTitle && (
-        <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
-          <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
-        </div>
+      {/* An Epic or Feature takes the file's own text, else nothing (owner decision, 2026-11-25): say so rather than show a blank. */}
+      {isParentEntry && !entry.description.trim() ? (
+        <p className="text-sm text-ink-3" data-testid="empty-description">
+          Empty. The file has no text of its own for this {entry.type}, so no description is written.
+        </p>
+      ) : (
+        !echoesTitle && (
+          <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+            <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
+          </div>
+        )
       )}
         <ProposalCard
           key={entry.localId}
@@ -1206,7 +1216,7 @@ export function NodeDetailPanel({
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,
           rather than leaving this slot silently empty. */}
-      {isParentEntry && <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>}
+      {isParentEntry && (parentSlot ?? <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>)}
       {moveSlot}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
         <div className="mt-1">

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ItsDecision, UnderIt, decisionFor } from './ParentSections';
+import type { ReadingDecision } from '../api/jobs';
 import { useAnimate } from 'motion/react-mini';
 import { ChevronUp, ChevronDown, Keyboard, MessageSquareText, Pencil } from 'lucide-react';
 import { Popover } from 'radix-ui';
@@ -128,6 +130,8 @@ export function NodeDetailDialog({
   onAddChild,
   onMove,
   onChangeType,
+  decisions,
+  onOpenEntry,
   onNavigate,
   hasPrev,
   hasNext,
@@ -222,6 +226,10 @@ export function NodeDetailDialog({
   onMove?: (localId: string, input: DiffTreeMoveInput) => void;
   // Changes the item's type within the ladder; Undo passes back the type it had (entry.retypedFrom).
   onChangeType?: (localId: string, type: string) => void;
+  // The study's decisions for the job's file (its reading): an Epic or Feature built from a heading shows the one for its heading.
+  decisions?: ReadingDecision[];
+  // Opens another item in this dialog (an item listed under an Epic or Feature).
+  onOpenEntry?: (localId: string) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
   hasNext?: boolean;
@@ -451,6 +459,23 @@ export function NodeDetailDialog({
       </>
     ) : undefined;
 
+  // An Epic's or Feature's own sections: the new-job page's decision for its heading, then the items under it (in place of the one-line count).
+  const decision = entry.type === 'Epic' || entry.type === 'Feature' ? decisionFor(entry, decisions) : undefined;
+  const parentSlot =
+    entry.type === 'Epic' || entry.type === 'Feature' ? (
+      <>
+        {decision && (
+          <ItsDecision
+            entry={entry}
+            decision={decision}
+            editable={entryEditable && !!onSave}
+            onRename={(title) => onSave?.(entry.localId, { title, description: entry.description })}
+          />
+        )}
+        <UnderIt entry={entry} entries={Object.values(diffByLocalId ?? {})} onOpen={onOpenEntry} />
+      </>
+    ) : undefined;
+
   const duplicateSlot =
     entry.action === 'dedup_skip' || entry.duplicateOf || (entry.action === 'reuse' && entry.changedSinceWritten) ? (
       <DuplicateMatchCard
@@ -614,6 +639,7 @@ export function NodeDetailDialog({
       figureMoveTargets={figureMoveTargets}
       onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
+      parentSlot={parentSlot}
       requirementClassificationField={requirementClassificationField}
     />
     </>

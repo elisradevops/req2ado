@@ -240,6 +240,16 @@ describe('DiffTree', () => {
     expect(marks.className).not.toMatch(/bg-|border-/);
   });
 
+  it('adds a row\'s notes ("Spelling fixed", "Accepted without ID") after its marks, just as quiet', () => {
+    const last = ENTRIES[ENTRIES.length - 1];
+    const marked = [...ENTRIES.slice(0, -1), { ...last, derivedMarks: ['TBD'] }];
+    render(
+      <DiffTree entries={marked} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()}
+        rowNotes={{ [last.localId]: ['Accepted without ID'] }} />,
+    );
+    expect(screen.getByTestId('row-marks')).toHaveTextContent('TBD · Accepted without ID');
+  });
+
   it('dims an excluded row', () => {
     const excludedEntries = [{ ...ENTRIES[0], excluded: true }, ...ENTRIES.slice(1)];
     render(

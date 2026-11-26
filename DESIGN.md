@@ -2834,7 +2834,13 @@ durable `job_failed` event, when there is one, still takes precedence. Reading t
 - **Marks are quiet words.** TBD, Should, Will and No obligation (found in the requirement's text by code, never written to Azure DevOps and
   never called tags) show after the title in `text-xs text-ink-3`, no chip, no tint. Colour stays for a row that blocks the write.
 - **Filter chips for the marks.** Above the tree, one chip per mark present ("TBD · 3"), pressed to narrow the tree; they combine with the
-  other filters (an intersection), and with none pressed they do not filter.
+  other filters (an intersection), and with none pressed they do not filter. After the marks, **Suggestion · n** (a suggestion waiting for a
+  decision) and **Left out · n** (left out itself or under a left-out parent, the Write bar's count).
+- **Row notes**, as quiet as the marks and after them: **Spelling fixed** (the study corrected the heading the item was built from) and
+  **Accepted without ID** (an item of the counted Customer ID acceptance).
+- **"About this file" from the job header** opens the §11.2.6 panel with the job's own reading (`GET /jobs/:id/file-reading`: the reading
+  stored with the rulebook the job was built from), plus a read-only **Decisions** list, since an accepted level removal has no item to show
+  it on. Absent for a job built without a rulebook.
 - **The Write bar names its next step.** While blocked: a primary **Fix N items** button that goes to the first blocker (§11.3.6). When clear:
   the `cta` **Write N items**, or **Write N of M items** when some are left out, named "… to Azure DevOps" for assistive tech. Signal yellow
   stays on that button alone (§16.7).
@@ -3487,6 +3493,12 @@ Issues: one line each, absent when clean ─────────────
 - **What the file states**, a plain `dl` after Classification: Requirement type (a Requirement only; "Not stated in the file" when absent),
   "Tags from the file" (written to Azure DevOps) and "Marked in the text" with "(for filtering, not written)". Absent when there is
   nothing to say.
+- **An Epic or Feature's own sections** (`ParentSections.tsx`), in place of the one-line coverage sentence: **Its decision**, when the
+  new-job page proposed something for the heading it was built from (its proposal, reason and choice; a rename switches with Accept / Keep
+  until the write, as a title edit; a level removal is fixed for the job and says "To change it, start a new job from this file." (owner
+  decision, 2026-11-26)), then **Under it**: the items directly under it, each opening on click, left-out ones struck through and marked, and
+  a live line such as "3 Features · 13 requirements will be written".
+- **An empty Epic or Feature description says why:** "Empty. The file has no text of its own for this Feature, so no description is written."
 
 #### §11.4.6 — Reviewing an assistant's suggestion next to the original (2026-11-20)
 
@@ -4518,4 +4530,5 @@ code, then moving its row up into §18.
 | New job: two or three steps by mode, "Stop waiting", stacked mode cards with an output preview and a "No model cost" chip | one page in both modes with the file study, decisions, "About this file" and "What it will build" (§11.2.6); compact side-by-side cards named Standard / With AI review (§11.2.1) | `pages/NewJobWizard.tsx`, new `components/FileStudyPanel.tsx`, `AboutFilePanel.tsx`, `BuildPreview.tsx`, `utils/buildPreview.ts`, `components/ModeCards.tsx`, `ModeBadge.tsx`, `ui/Dialog.tsx`. Built 2026-11-25. Tests: `NewJobWizard.test.tsx`, `FileStudyPanel.test.tsx`, `buildPreview.test.ts`, `ModeCards.test.tsx`. |
 | Review: "Exclude" checkbox, marks as chips, a soft-disabled Write while blocked, no type change | write checkbox, quiet marks with filter chips, Fix N items then Write N items (§11.3.7); Type menu, suggestion origin, what the file states (§11.4.5) | `components/DiffTree.tsx`, `WriteBar.tsx`, `pages/JobDetail.tsx`, `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `ProposalReview.tsx`, new `TypeControl` test; server `PATCH /jobs/:id/diff/:localId/type`. Built 2026-11-25. Tests: `DiffTree.test.tsx`, `DiffTree.focus.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `TypeControl.test.tsx`, `ProposalReview.test.tsx`, `NodeDetailPanel.test.tsx`, `jobs.service.spec.ts`. |
 | BASELINE / SURVEY in user copy | Standard / With AI review (§12) | `utils/labels.ts`, `utils/warningKinds.ts`, `components/ProgressBanner.tsx`, `BulkApproveDialog.tsx`, `KbAddDialog.tsx`, `KbAddBatchDialog.tsx`, `KbFileDetailPane.tsx`, `KbUnlistedContentDialog.tsx`, `pages/KnowledgeBase.tsx`, `BatchJobWizard.tsx`, `NewJobWizard.tsx`. 2026-11-25. |
-| **Not built yet** from the approved mockup (2026-11-25) | review toolbar chips "Suggestion · n" and "Left out · n"; row words "Spelling fixed" and "Accepted without ID"; in the dialog, an Epic/Feature's "Its decision" (Accept/Keep until the write), "Under it" with live counts, and "Empty. The file has no text of its own…" for an empty description; "About this file" from the job header; a phone-width (390 px) walk of the new-job page and the review | `pages/JobDetail.tsx`, `components/DiffTree.tsx`, `NodeDetailPanel.tsx`, `AboutFilePanel.tsx`. The decisions need the rulebook's proposals on the job (they are on the pre-study response today). Dead code left behind: the "Stop waiting" handlers in `NewJobWizard.tsx`, `FileReadingCard.tsx` and `FileRulesCard.tsx` are no longer reachable from the page. |
+| Review additions from the approved mockup: Suggestion and Left out chips, row notes, "About this file" from the job header, Its decision, Under it, the empty-description line | §11.3.7, §11.4.5 | `pages/JobDetail.tsx`, `components/DiffTree.tsx` (`rowNotes`), new `components/ParentSections.tsx`, `NodeDetailDialog.tsx` (`decisions`, `onOpenEntry`), `NodeDetailPanel.tsx` (`parentSlot`), `AboutFilePanel.tsx` (`showDecisions`), `api/jobs.ts`; server `GET /jobs/:id/file-reading` (`JobsService.getFileReading`, no migration). Built 2026-11-26. Tests: `ParentSections.test.tsx`, `JobDetail.test.tsx`, `NodeDetailDialog.test.tsx`, `NodeDetailPanel.test.tsx`, `DiffTree.test.tsx`, `jobs.service.spec.ts`, `jobs.controller.spec.ts`. |
+| **Still open** from the approved mockup | a browser walk of the new-job page and the review at 1440 px and 390 px against the mockup | Dead code left behind: the "Stop waiting" handlers in `NewJobWizard.tsx`, `FileReadingCard.tsx` and `FileRulesCard.tsx` are no longer reachable from the page. |
