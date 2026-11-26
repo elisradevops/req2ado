@@ -880,6 +880,12 @@ describe('IngestionHttpClient.prestudy', () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ source: 'model', details }) });
     expect((await new IngestionHttpClient('http://ingestion.internal').prestudy(MINIMAL_DOC, { userId: 'user-1' })).details).toEqual(details);
   });
+
+  it('uses the long-running dispatcher, so its own 15-minute limit applies instead of fetch\'s default 300 s cut (seen live, 2026-11-26)', async () => {
+    await new IngestionHttpClient('http://ingestion.internal').prestudy(MINIMAL_DOC, { userId: 'user-1' });
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(options.dispatcher).toBeDefined();
+  });
 });
 
 

@@ -31,6 +31,11 @@ beforeEach(() => {
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
   // By default the job reads no Study (as for a user with no model connection), so Start behaves as it did before the Study step.
   vi.spyOn(jobsApi, 'previewStudy').mockResolvedValue({ kind: 'skipped' });
+  // By default the file study answers with rules but no reading (as for a spreadsheet, or a rulebook stored before readings were kept), so a
+  // test about something else starts from a finished study: a failed study holds Start (owner decision, 2026-11-25).
+  vi.spyOn(jobsApi, 'previewRules').mockResolvedValue({
+    id: 'rb-default', source: 'model', hash: 'h-default', rules: [], warnings: [], rulebook: {}, reused: false, skipped: null, details: null,
+  } as never);
 });
 
 describe('NewJobWizard Step 1', () => {
@@ -1928,12 +1933,29 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
   });
 
-  it('a failed reading never blocks the job: it says so, and the job carries no rulebook', async () => {
-    vi.spyOn(jobsApi, 'previewRules').mockRejectedValue({ response: { data: { message: 'The model timed out.' } } });
+  it('a failed study holds Start and says why, with no bare server error; Try again asks again and a success frees Start (owner decision, 2026-11-25)', async () => {
+    const learn = vi
+      .spyOn(jobsApi, 'previewRules')
+      .mockRejectedValueOnce({ response: { status: 500, data: { statusCode: 500, message: 'Internal server error' } } })
+      .mockResolvedValue(VIEW);
     await toCheckAndStart();
-    expect(await screen.findByText(/the model timed out\./i)).toBeInTheDocument();
+    const failed = await screen.findByTestId('file-study-failed');
+    expect(screen.getByRole('heading', { name: 'The file could not be studied' })).toBeInTheDocument();
+    expect(failed).toHaveTextContent('The model did not finish reading the file. Start waits until the study succeeds.');
+    expect(failed).not.toHaveTextContent(/internal server error/i);
+    expect(screen.getByTestId('start-study-failed')).toHaveTextContent('Start waits for the file study.');
+    expect(screen.getByRole('button', { name: /looks right/i })).toBeDisabled();
+    await userEvent.click(within(failed).getByRole('button', { name: 'Try again' }));
+    expect(learn).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByTestId('file-study-failed')).not.toBeInTheDocument());
     await startJob();
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: undefined }));
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: 'rb1' }));
+  });
+
+  it('shows the server\'s own reason when it gives one', async () => {
+    vi.spyOn(jobsApi, 'previewRules').mockRejectedValue({ response: { status: 504, data: { message: 'The model took longer than 10 minutes to answer.' } } });
+    await toCheckAndStart();
+    expect(await screen.findByTestId('file-study-failed')).toHaveTextContent('The model took longer than 10 minutes to answer.');
   });
 
   it('an edit that fits replaces the rulebook the job is built from; one that does not is refused with the reason', async () => {

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, RotateCcw } from 'lucide-react';
 import { ElapsedTimer } from './ElapsedTimer';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
+import { Alert } from '../ui/Alert';
 import type { FileReading, ProposalDecision } from '../api/jobs';
 
 // The new-job page's "What was read from the file" (the approved mockup, 2026-11-25): while the study runs, what it does and how long it has
@@ -30,7 +31,11 @@ export function verdictCounts(reading: FileReading): string {
 const STUDY_STEPS = ["Reading the file's layout and headings", 'Asking the model three times how the file states its requirements', 'Checking every answer against the file'];
 
 interface Props {
-  status: 'studying' | 'ready';
+  status: 'studying' | 'ready' | 'failed';
+  /** Why the study failed (status 'failed'): one plain sentence, cause first. */
+  error?: string | null;
+  /** Asks the study again (status 'failed'). */
+  onRetry?: () => void;
   startedAt?: string;
   reading?: FileReading | null;
   decisions: Record<string, ProposalDecision | undefined>;
@@ -38,7 +43,7 @@ interface Props {
   onOpenAbout: () => void;
 }
 
-export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide, onOpenAbout }: Props): React.ReactElement {
+export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide, onOpenAbout, error, onRetry }: Props): React.ReactElement {
   const [why, setWhy] = useState<Record<string, boolean>>({});
   if (status === 'studying') {
     return (
@@ -62,6 +67,30 @@ export function FileStudyPanel({ status, startedAt, reading, decisions, onDecide
             <ElapsedTimer startedAt={startedAt} /> so far · Start waits for it
           </p>
         )}
+      </section>
+    );
+  }
+  // The study is required (owner decision, 2026-11-25): the tree is built by what it learned, so a failed study holds Start and offers to try
+  // again here, in the same place the result would be, rather than falling back to building from the headings alone.
+  if (status === 'failed') {
+    return (
+      <section aria-labelledby="file-study-heading" className="flex flex-col gap-2.5" data-testid="file-study-panel">
+        <h2 id="file-study-heading" className="text-title">
+          The file could not be studied
+        </h2>
+        <Alert severity="warning">
+          <div className="flex flex-col gap-2" data-testid="file-study-failed">
+            <span>{error || 'The model did not finish reading the file.'} Start waits until the study succeeds.</span>
+            <span className="text-xs">Try again. If it keeps failing, choose a faster model or ask your administrator.</span>
+            {onRetry && (
+              <div>
+                <Button size="sm" variant="outline" onClick={onRetry}>
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Try again
+                </Button>
+              </div>
+            )}
+          </div>
+        </Alert>
       </section>
     );
   }

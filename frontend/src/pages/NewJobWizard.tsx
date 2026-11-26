@@ -83,13 +83,14 @@ function isFinalStep(step: number, mode: 'baseline' | 'survey'): boolean {
 }
 
 /** The reason an API call failed, as the server stated it (a rulebook that does not fit the file says why), else a plain sentence. */
-function errorReason(err: unknown): string {
+function errorReason(err: unknown, fallback = "The file's conventions could not be read."): string {
   // The reading is limited per minute (the server's throttle): say so rather than "could not be read".
   if ((err as { response?: { status?: unknown } } | null)?.response?.status === 429) return 'Too many reads in a minute. Try again shortly.';
   const message = (err as { response?: { data?: { message?: unknown } } } | null)?.response?.data?.message;
-  if (typeof message === 'string' && message) return message;
+  // NestJS's own "Internal server error" says nothing the user can act on: fall through to the plain sentence instead.
+  if (typeof message === 'string' && message && message !== 'Internal server error') return message;
   if (Array.isArray(message) && message.length > 0) return message.join('; ');
-  return "The file's conventions could not be read.";
+  return fallback;
 }
 
 
@@ -595,7 +596,7 @@ export function NewJobWizard(): React.ReactElement {
   // file is parsed, and shown on step 3 (with no model connection it is skipped). Moving between steps keeps the answer (still in flight or not); a new
   // file, "Change document" or leaving the page drops it. It reads with the model chosen at that moment (BASELINE: the deployment's default; SURVEY: the
   // job's model). The model is not part of what triggers it: once read, the same file keeps its rules until the user reads it again, and the card says
-  // when the job will use another model. "Stop waiting" lets Start go without it: the job's worker then reads the file itself when it starts.
+  // when the job will use another model. Start waits for it: the tree is built by what it learned (owner decision, 2026-11-25).
   const [rules, setRules] = useState<{ status: RulesStatus; view: RulebookView | null; error: string | null; model?: string; startedAt?: string }>({ status: 'idle', view: null, error: null });
   const rulesRequestSeq = useRef(0);
   const rulesAbort = useRef<AbortController | null>(null);
@@ -619,15 +620,8 @@ export function NewJobWizard(): React.ReactElement {
       setRules(view ? { status: 'ready', view, error: null, model: usedModel } : { status: 'error', view: null, error: 'The server gave no answer.', model: usedModel });
     } catch (err) {
       if (seq !== rulesRequestSeq.current || controller.signal.aborted) return;
-      setRules({ status: 'error', view: null, error: errorReason(err), model: usedModel });
+      setRules({ status: 'error', view: null, error: errorReason(err, 'The model did not finish reading the file.'), model: usedModel });
     }
-  }, []);
-
-  // Stops waiting, not the job's own reading: the request is dropped (ingestion stops its model calls) and Start goes free; the file stays.
-  const cancelRules = useCallback((): void => {
-    rulesRequestSeq.current += 1; // the answer, if it still comes, is no longer wanted
-    rulesAbort.current?.abort();
-    setRules({ status: 'cancelled', view: null, error: null });
   }, []);
 
   const resetRules = useCallback((): void => {
@@ -668,8 +662,8 @@ export function NewJobWizard(): React.ReactElement {
       return errorReason(err);
     }
   }
-  // Start (SURVEY step 3, BASELINE step 2) waits for the reading; 'idle' there is the moment before it is asked (the effect above runs after the first paint). 'cancelled' is not
-  // busy: the user stopped waiting, and the job reads the file itself.
+  // Start waits for the reading; 'idle' there is the moment before it is asked (the effect above runs after the first paint). A failed reading
+  // also holds Start (studyFailed, below): the study is required.
   const rulesBusy = rules.status === 'loading' || rules.status === 'idle';
   // The model the reading used against the one the job will use (BASELINE: the default). A later model pick does not read again by itself.
   const defaultModelName = 'the default model';
@@ -688,6 +682,8 @@ export function NewJobWizard(): React.ReactElement {
   const [aboutOpen, setAboutOpen] = useState(false);
   // The study needs a model, in both modes (owner decision, 2026-11-25): with no model connection Start is blocked, with the reason.
   const noModel = rules.status === 'ready' && Boolean(rules.view?.skipped);
+  // The study is required (owner decision, 2026-11-25): a failed one holds Start until it is asked again and succeeds.
+  const studyFailed = rules.status === 'error';
 
   // Reading and analyzing the document (the Study): the reading the job itself does before Analyze, done here while the user checks the page,
   // so the job reuses it (ingestion keeps it by user, text, rulebook and model) instead of reading again. It starts once the file's layout is
@@ -702,13 +698,10 @@ export function NewJobWizard(): React.ReactElement {
   });
   const studyModel = mode === 'survey' ? model || undefined : undefined;
   const studyRulebookId = rules.view?.id || undefined;
-  // "Stop waiting" stops this reading too (one button for both): the job then reads the document itself when it starts.
-  const [studyStopped, setStudyStopped] = useState(false);
-  useEffect(() => setStudyStopped(false), [file, fileHash]);
-  const studyKey = file && hasPreview && !rulesBusy && !studyStopped ? [fileHash, mode, studyModel ?? '', studyRulebookId ?? ''].join('|') : null;
+  const studyKey = file && hasPreview && !rulesBusy ? [fileHash, mode, studyModel ?? '', studyRulebookId ?? ''].join('|') : null;
   useEffect(() => {
     if (!file || studyKey === null) {
-      setStudy({ status: studyStopped ? 'cancelled' : 'waiting', done: 0, total: 0, view: null, error: null });
+      setStudy({ status: 'waiting', done: 0, total: 0, view: null, error: null });
       return undefined;
     }
     const controller = new AbortController();
@@ -734,17 +727,8 @@ export function NewJobWizard(): React.ReactElement {
       },
     );
     return () => controller.abort();
-  }, [studyKey, file, mode, studyModel, studyRulebookId, studyStopped]);
+  }, [studyKey, file, mode, studyModel, studyRulebookId]);
   const studyBusy = study.status === 'waiting' || study.status === 'reading';
-  // One "Stop waiting" for both readings Start waits on.
-  const stopWaiting = useCallback((): void => {
-    if (rules.status === 'idle' || rules.status === 'loading') cancelRules();
-    setStudyStopped(true);
-  }, [rules.status, cancelRules]);
-  const readNow = useCallback((): void => {
-    setStudyStopped(false);
-    if (file && rules.status === 'cancelled') void learnRules(file, false);
-  }, [file, rules.status, learnRules]);
 
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
@@ -989,6 +973,18 @@ export function NewJobWizard(): React.ReactElement {
       <FileStudyPanel status="studying" startedAt={rules.startedAt} decisions={decisions} onDecide={() => undefined} onOpenAbout={() => undefined} />
       {summaryBlock}
     </>
+  ) : studyFailed ? (
+    <>
+      <FileStudyPanel
+        status="failed"
+        error={rules.error}
+        decisions={decisions}
+        onDecide={() => undefined}
+        onOpenAbout={() => undefined}
+        onRetry={() => file && void learnRules(file, true)}
+      />
+      {summaryBlock}
+    </>
   ) : reading ? (
     <>
       {summaryBlock}
@@ -1023,8 +1019,6 @@ export function NewJobWizard(): React.ReactElement {
       }}
       study={study}
       onRelearn={() => file && void learnRules(file, true)}
-      onStopWaiting={stopWaiting}
-      onReadNow={readNow}
       onSaveEdit={handleSaveRulesEdit}
     />
   );
@@ -1063,9 +1057,14 @@ export function NewJobWizard(): React.ReactElement {
               </Button>
             </p>
           )}
+          {studyFailed && (
+            <p className="text-xs text-ink-2" data-testid="start-study-failed">
+              Start waits for the file study. Try again above.
+            </p>
+          )}
           <SafetyLine variant="wizard" />
           </div>
-          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing || noModel} className="ml-auto">
+          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing || noModel || studyFailed} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : studyBusy ? 'Reading the document…' : 'Looks right — start job'}
           </Button>

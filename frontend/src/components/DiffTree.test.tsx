@@ -1433,6 +1433,14 @@ describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
   const itemSize = (container: HTMLElement) => container.querySelector('[data-item-size]')?.getAttribute('data-item-size');
   afterEach(() => vi.restoreAllMocks());
 
+  it('draws the type as its icon only in a wide row too, with no visible label (the approved mockup, 2026-11-25)', () => {
+    renderAtTreeWidth(1200);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    const badge = row.querySelector('[title="Requirement"]') as HTMLElement;
+    expect(badge.className).toContain('border-0');
+    expect(within(badge).getByText('Requirement')).toHaveClass('sr-only'); // read by assistive tech, not drawn
+  });
+
   it('uses the two-line row below 800px of tree width, so the Customer ID is readable instead of "P…"', () => {
     const { container } = renderAtTreeWidth(696);
     const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;

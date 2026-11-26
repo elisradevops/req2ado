@@ -39,10 +39,6 @@ interface Props {
   /** SURVEY's knowledge-base readiness, shown at the foot of the card. */
   knowledgeBase?: React.ReactNode;
   onRelearn: () => void;
-  /** Stops waiting for both readings (the file's layout and the document): Start goes free, and the job reads what is missing itself. */
-  onStopWaiting: () => void;
-  /** After stopping: reads the file now after all. */
-  onReadNow: () => void;
   onSaveEdit: (rulebook: Record<string, unknown>) => Promise<string | null>;
 }
 
@@ -94,12 +90,11 @@ export function readingLine(rules: FileReadingRules, study: FileReadingStudy): s
 /**
  * The wizard's one card about the file (BASELINE and SURVEY alike): what the file is and how it is built (its sections), what is left out (front
  * matter, by the document's own headings and pages), how items will be built (the rules, in words), and what the model learned from reading it.
- * One status line, one timer and one "Stop waiting" for the two readings Start waits on (DESIGN.md §11.2, §16.15, §16.20).
+ * One status line and one timer for the two readings Start waits on (DESIGN.md §11.2, §16.15, §16.20).
  */
-export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary, rules, study, knowledgeBase, onRelearn, onStopWaiting, onReadNow, onSaveEdit }: Props): React.ReactElement {
+export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary, rules, study, knowledgeBase, onRelearn, onSaveEdit }: Props): React.ReactElement {
   const waiting = readingLine(rules, study);
   const startedAt = rules.status === 'loading' ? rules.startedAt : study.startedAt;
-  const stopped = rules.status === 'cancelled' || study.status === 'cancelled';
   return (
     <SectionCard title="This file and how it will be read">
       <div className="flex flex-col gap-4" data-testid="file-reading-card">
@@ -114,19 +109,10 @@ export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary
                 <ElapsedTimer startedAt={startedAt} /> so far
               </span>
             )}
-            {/* "Stop waiting" is in the sticky Start bar, beside the button it frees: one button for both readings. */}
           </div>
         )}
         {rules.modelLabel && rules.status !== 'idle' && rules.status !== 'cancelled' && !rules.view?.skipped && (
           <p className="font-mono text-meta text-ink-3">Model: {rules.modelLabel}</p>
-        )}
-        {stopped && (
-          <div className="flex flex-wrap items-center gap-2" data-testid="file-reading-stopped">
-            <p className="text-sm text-ink-2">Stopped waiting. The job reads the file&apos;s layout and the document when it starts, which adds time to the job.</p>
-            <Button size="sm" variant="outline" onClick={onReadNow}>
-              Read now instead
-            </Button>
-          </div>
         )}
 
         <AiSummaryBlock aiSummary={aiSummary} onRewriteSummary={onRewriteSummary} />
@@ -168,8 +154,6 @@ export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary
               modelLabel={rules.modelLabel}
               modelHint={rules.modelHint}
               onRelearn={onRelearn}
-              onStopWaiting={onStopWaiting}
-              onReadNow={onReadNow}
               onSaveEdit={onSaveEdit}
             />
           </section>

@@ -603,6 +603,8 @@ export class IngestionHttpClient {
         ...(options.fileId ? { 'X-Req2Ado-File-Id': options.fileId } : {}),
       },
       body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}), ...(options.rulebook ? { rulebook: options.rulebook } : {}), ...(options.fresh ? { fresh: true } : {}) }),
+      // Ingestion answers only when every ask is done: without this dispatcher fetch's default 300 s header cut fires before PRESTUDY_TIMEOUT_MS.
+      dispatcher: this.longRunningAgent,
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     });
     if (!response.ok) throw await _ingestionError(response, 'Ingestion /prestudy request failed: ');

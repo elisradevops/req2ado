@@ -1478,7 +1478,8 @@ function DiffTreeRow({
               on any non-CMMI project this lookup missed silently and every
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
-          <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
+          {/* Icon only, as in the narrow row (the approved mockup, 2026-11-25): the type's glyph and colour say it, the row's description names it. */}
+          <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} iconOnly />
           {/* The Customer ID leads the title, like a clause number: at the end of a long title it was the first mark to be cut away. */}
           {customerIdEl}
           {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
