@@ -2567,6 +2567,20 @@ export function JobDetail(): React.ReactElement {
     return chips.filter((chip) => chip.ids.size > 0);
   }, [diff]);
   const activeChip = markFilter ? markChips.find((chip) => chip.key === markFilter) : undefined;
+  // "About this file" lists the decisions as they stand now: a rename switches in its item's dialog until the write, so it reads as accepted while
+  // its item (local id "g_" + the heading's block id) carries the proposed title. A level removal is fixed for the job and keeps its decision.
+  const aboutReading = useMemo(() => {
+    const reading = fileReading?.reading;
+    if (!reading) return null;
+    const titleOf = new Map(diff.map((entry) => [entry.localId, entry.title]));
+    return {
+      ...reading,
+      decisions: reading.decisions.map((d) => {
+        const title = d.action === 'rename' && d.newTitle ? titleOf.get(`g_${d.headingId}`) : undefined;
+        return title === undefined ? d : { ...d, decision: title === d.newTitle ? ('accept' as const) : ('keep' as const) };
+      }),
+    };
+  }, [fileReading, diff]);
   // Quiet words a row adds after its marks: "Spelling fixed" for a heading the study corrected (its item's local id is "g_" + the heading's
   // block id), and "Accepted without ID" for the items of a counted acceptance the reviewer made.
   const rowNotes = useMemo(() => {
@@ -3482,7 +3496,7 @@ export function JobDetail(): React.ReactElement {
       )}
       {/* Present from the start so the later text is announced; focus is never moved. */}
       <LiveStatusRegion message={arrival?.message ?? ''} />
-      {fileReading?.reading && <AboutFilePanel open={aboutOpen} onOpenChange={setAboutOpen} reading={fileReading.reading} codes={fileReading.codes} showDecisions />}
+      {aboutReading && <AboutFilePanel open={aboutOpen} onOpenChange={setAboutOpen} reading={aboutReading} codes={fileReading?.codes ?? []} showDecisions />}
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">

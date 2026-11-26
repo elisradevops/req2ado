@@ -2192,8 +2192,9 @@ sit on the page, not in cards; the decision list and the mode cards are the only
   their requirement counts, recomputed as decisions change (an accepted rename in `accent-ink`, a removed level gone with its children moved
   up, an open decision marked "?"), a footer with the totals and any removed level. The list scrolls inside its card (`max-h`, not a clipped
   box: rows keep `min-h`). Hidden while the study runs.
-- **The Start bar:** Back, the §0 safety line, and "Looks right — start job" (primary, `Activity` glyph, never `signal`). A large With AI
-  review run still asks first (§11.1b).
+- **The Start bar:** one row: Back, then one column holding what Start waits for (the destination still missing, the reading, the
+  missing model) above the §0 safety line, then "Looks right — start job" (primary, `Activity` glyph, never `signal`). On a phone the column
+  drops under the two buttons, so they share a row. A large With AI review run still asks first (§11.1b).
 
 ### §11.3 — The running-job screen
 
@@ -2755,7 +2756,9 @@ review; the toolbar chips are the entry points into each group, and "Accept N" s
 warnings card is not hidden to hit a number": it is no longer hidden, it is folded, and the work is one click away. (2) **After the run the
 rail is the horizontal strip** (the older rule above, "the rail folds away"), in one column: the vertical rail beside the view is for the
 running job only. (3) **The review view is a flex column of fixed height.** The tree takes the remaining height and the Write bar is its
-normal last item, not a floating panel, so nothing sits over the tabs or the last warning. The toolbar's main row is the filter chips;
+normal last item, not a floating panel, so nothing sits over the tabs or the last warning. **Amended 2026-11-26 (owner decision of
+2026-11-25, §11.3.7):** the Write bar is still the last item after the tree, and is now `sticky bottom-0 z-10`, so it is in reach on arrival and
+docks over the rows while the tree scrolls. The toolbar's main row is the filter chips;
 "All actions" and "Exclude/Include all" are in one "More" menu. A nested Epic is a quiet informational chip (neutral, no row tint): nesting an
 Epic under an Epic is valid, so it must not look like an error. The review screen states review status once (§11.6) and the destination once
 (the header bar); the Write bar shows only the count.
@@ -2841,6 +2844,8 @@ durable `job_failed` event, when there is one, still takes precedence. Reading t
 - **"About this file" from the job header** opens the §11.2.6 panel with the job's own reading (`GET /jobs/:id/file-reading`: the reading
   stored with the rulebook the job was built from), plus a read-only **Decisions** list, since an accepted level removal has no item to show
   it on. Absent for a job built without a rulebook.
+- **The Write bar is sticky** to the bottom of the screen (amending §11.3.5's "normal last item"). Being positioned also keeps its
+  screen-reader text inside it.
 - **The Write bar names its next step.** While blocked: a primary **Fix N items** button that goes to the first blocker (§11.3.6). When clear:
   the `cta` **Write N items**, or **Write N of M items** when some are left out, named "… to Azure DevOps" for assistive tech. Signal yellow
   stays on that button alone (§16.7).
@@ -4531,4 +4536,6 @@ code, then moving its row up into §18.
 | Review: "Exclude" checkbox, marks as chips, a soft-disabled Write while blocked, no type change | write checkbox, quiet marks with filter chips, Fix N items then Write N items (§11.3.7); Type menu, suggestion origin, what the file states (§11.4.5) | `components/DiffTree.tsx`, `WriteBar.tsx`, `pages/JobDetail.tsx`, `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `ProposalReview.tsx`, new `TypeControl` test; server `PATCH /jobs/:id/diff/:localId/type`. Built 2026-11-25. Tests: `DiffTree.test.tsx`, `DiffTree.focus.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `TypeControl.test.tsx`, `ProposalReview.test.tsx`, `NodeDetailPanel.test.tsx`, `jobs.service.spec.ts`. |
 | BASELINE / SURVEY in user copy | Standard / With AI review (§12) | `utils/labels.ts`, `utils/warningKinds.ts`, `components/ProgressBanner.tsx`, `BulkApproveDialog.tsx`, `KbAddDialog.tsx`, `KbAddBatchDialog.tsx`, `KbFileDetailPane.tsx`, `KbUnlistedContentDialog.tsx`, `pages/KnowledgeBase.tsx`, `BatchJobWizard.tsx`, `NewJobWizard.tsx`. 2026-11-25. |
 | Review additions from the approved mockup: Suggestion and Left out chips, row notes, "About this file" from the job header, Its decision, Under it, the empty-description line | §11.3.7, §11.4.5 | `pages/JobDetail.tsx`, `components/DiffTree.tsx` (`rowNotes`), new `components/ParentSections.tsx`, `NodeDetailDialog.tsx` (`decisions`, `onOpenEntry`), `NodeDetailPanel.tsx` (`parentSlot`), `AboutFilePanel.tsx` (`showDecisions`), `api/jobs.ts`; server `GET /jobs/:id/file-reading` (`JobsService.getFileReading`, no migration). Built 2026-11-26. Tests: `ParentSections.test.tsx`, `JobDetail.test.tsx`, `NodeDetailDialog.test.tsx`, `NodeDetailPanel.test.tsx`, `DiffTree.test.tsx`, `jobs.service.spec.ts`, `jobs.controller.spec.ts`. |
-| **Still open** from the approved mockup | a browser walk of the new-job page and the review at 1440 px and 390 px against the mockup | Dead code left behind: the "Stop waiting" handlers in `NewJobWizard.tsx`, `FileReadingCard.tsx` and `FileRulesCard.tsx` are no longer reachable from the page. |
+| Browser walk of the new-job page and the review at 1440 and 390 px (2026-11-26) | fixes found by the walk | Local build against a mock API fed by the TV twin through the real ingestion code (no backend, no model). Fixed: a stray "0" in an Epic's dialog (`NodeDetailPanel.tsx`, the file-details condition); the rail list's screen-reader labels stretching the page by about 300 px (`BuildPreview.tsx`, list `relative`, as F15); the blocked Write bar's screen-reader count making the whole window scroll by 52 px after "Fix 1 item" (`WriteBar.tsx`, now `sticky`, which positions it); the Write bar below the fold on arrival (now sticky, owner decision); the Start bar wrapping to three rows with Back alone (`NewJobWizard.tsx`); "About this file" listing a rename as decided on the new-job page after it was switched in the dialog (`JobDetail.tsx`, `aboutReading`); a With AI review suggestion announced as the assistant's (`utils/itemIssues.ts`). Tests: `NodeDetailPanel.test.tsx`, `WriteBar.test.tsx`, `JobDetail.test.tsx`, `utils/itemIssues.test.ts`. |
+| Toasts above a docked bar; no comment text on screen (2026-11-26) | `components/ToastProvider.tsx` (the toast region moves to `bottom-28`, `bottom-44` on a phone, while the page has a `data-dock` bar: the review's Write bar and the new job's Start bar), `WriteBar.tsx` and `NewJobWizard.tsx` (`data-dock`), `ProposalReview.tsx` (the "// Sticky…" text is now a JSX comment) | Measured live: the acceptance toast ends above the Write bar at 1440 (bar top 802) and the toast region ends at 668 at 390 (bar top 702). Tests: `ToastProvider.test.tsx`, `WriteBar.test.tsx`, `ProposalReview.test.tsx`. |
+| **Still open** after the walk | wide review rows show the type as a labelled badge where the mockup has the icon only | Dead code: the "Stop waiting" handlers in `NewJobWizard.tsx`, `FileReadingCard.tsx` and `FileRulesCard.tsx`. |

@@ -1030,30 +1030,33 @@ export function NewJobWizard(): React.ReactElement {
   );
   const startBar = (
         // sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through.
-        <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock">
+        <div data-dock className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock">
           {/* One page in both modes: Back goes to the upload. */}
           <Button variant="outline" onClick={handleBack}>
             Back
           </Button>
+          {/* One row (the approved mockup): Back, what Start is waiting for and the safety line, then Start. On a phone the text drops under the
+              two buttons, so they share a row instead of Back standing alone. */}
+          <div className="flex min-w-0 flex-1 flex-col gap-1 max-sm:order-last max-sm:basis-full">
           {/* Below lg the rail comes after this bar, so Start would be pressed without the destination in view: say it here. */}
           {areaPath && (
-            <p className="w-full min-w-0 break-words font-mono text-xs text-ink-2 lg:hidden">
+            <p className="min-w-0 break-words font-mono text-xs text-ink-2 lg:hidden">
               Lands in {formatDestinationPreview(project, areaPath, iterationPath, state)}
             </p>
           )}
           {destinationMissing && (
-            <p className="w-full text-xs text-ink-2">
+            <p className="text-xs text-ink-2">
               {hasAdoSession && !project ? 'Choose a team project and an area path to start.' : 'Choose an area path to start.'}
             </p>
           )}
           {/* Why Start waits, beside Start at every width (the card above holds the one status region and the timer). */}
           {(rulesBusy || studyBusy) && (
-            <p className="w-full text-xs text-ink-2" data-testid="start-waits">
+            <p className="text-xs text-ink-2" data-testid="start-waits">
               Start waits for: {readingLine(rules, study) ?? 'the file to be read'}.
             </p>
           )}
           {noModel && (
-            <p className="flex w-full flex-wrap items-center gap-2 text-xs text-ink-2" data-testid="start-needs-model">
+            <p className="flex flex-wrap items-center gap-2 text-xs text-ink-2" data-testid="start-needs-model">
               <span>An AI model is needed to read the file, in both modes. Connect a model, then read the file again.</span>
               <Button size="sm" variant="outline" onClick={() => file && void learnRules(file, true)}>
                 Read the file again
@@ -1061,6 +1064,7 @@ export function NewJobWizard(): React.ReactElement {
             </p>
           )}
           <SafetyLine variant="wizard" />
+          </div>
           <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing || noModel} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : studyBusy ? 'Reading the document…' : 'Looks right — start job'}

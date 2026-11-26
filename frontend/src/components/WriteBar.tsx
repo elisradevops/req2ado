@@ -77,9 +77,12 @@ export function WriteBar({
   );
   return (
     // Its own panel at the end of the review (DESIGN.md §11.3.5): inset from the card above, bordered, with its own shadow. On a phone it clears the home indicator.
+    // Sticky to the bottom of the screen (owner decision, 2026-11-25: the write bar ends the tree and stays in reach). Being positioned also keeps
+    // its screen-reader text inside it: unpositioned, that absolute text sat at its place in the scrolled page and made the window scroll.
     <section
       aria-label="Review decision"
-      className="mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
+      data-dock
+      className="sticky bottom-0 z-10 mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
     >
       {(includedCount !== undefined || blocked || !canWriteToAdo || showNothingToWrite) && (
         <div className="mr-auto flex min-w-0 flex-col gap-0.5 max-md:mr-0">

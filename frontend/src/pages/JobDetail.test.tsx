@@ -5356,6 +5356,20 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Remove the level “Requirements”: accepted.');
   });
 
+  it('lists a rename in "About this file" as it stands now: kept once its item has the file\'s title back', async () => {
+    vi.spyOn(jobsApi, 'getJobFileReading').mockResolvedValue({
+      reading: {
+        kind: 'requirements_spec', coverTitle: null, requirements: 0, withIds: 0, epics: 1, features: 0, outline: [], outlineMore: 0,
+        decisions: [{ headingId: 'b4', action: 'rename', title: 'Design and construction', newTitle: 'Environment and safety', reason: 'Named from its sections.', decision: 'accept' }],
+        fixes: [], examples: [], leftOut: [], context: [],
+      },
+      codes: [],
+    });
+    await mount({ id: 'reading-2', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Design and construction' })], warnings: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'About this file' }));
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Rename “Design and construction” to “Environment and safety”: kept as the file has it.');
+  });
+
   it('names the next step, "Fix 2 items", while a fix item is open: states the reason in text, and never opens the write dialog', async () => {
     const write = await mount({ id: 'gate-1', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
     expect(write).toHaveAccessibleName('Fix 2 items');
@@ -5489,11 +5503,11 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
   });
 
   describe('the sticky write bar (W3)', () => {
-    it('comes after the tree in the DOM, as a normal last item (not floating)', async () => {
+    it('comes after the tree in the DOM and stays pinned to the bottom of the screen (owner decision, 2026-11-25)', async () => {
       const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
       const bar = screen.getByRole('region', { name: 'Review decision' });
       expect(bar).toContainElement(write);
-      expect(bar).not.toHaveClass('sticky');
+      expect(bar).toHaveClass('sticky', 'bottom-0');
       const tree = document.getElementById('proposed-tree')!;
       expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.getAllByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toHaveLength(1);

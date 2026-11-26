@@ -1543,3 +1543,13 @@ describe('NodeDetailPanel: an Epic or Feature with no text of its own', () => {
     expect(screen.queryByText(/^Covers /)).toBeNull();
   });
 });
+
+describe('NodeDetailPanel: an Epic with empty file tags and marks', () => {
+  it('renders no stray "0" from the empty lists (seen in the browser walk, 2026-11-26)', () => {
+    const epic: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Power', description: 'Text.', action: 'create', customerId: null, tags: [], fileTags: [], derivedMarks: [] };
+    const { container } = renderPanel(<NodeDetailPanel entry={epic} />);
+    expect(screen.queryByTestId('file-details')).toBeNull();
+    const zeros = [...container.querySelectorAll('*')].flatMap((el) => [...el.childNodes]).filter((n) => n.nodeType === 3 && n.textContent?.trim() === '0');
+    expect(zeros).toHaveLength(0);
+  });
+});

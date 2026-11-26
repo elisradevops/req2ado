@@ -13,7 +13,7 @@ export function BuildPreview({ reading, decisions }: { reading: FileReading; dec
   return (
     <SectionCard title="What it will build" action={<span className="font-mono text-meta text-ink-3">{rows.length + reading.requirements} items</span>}>
       <div className="flex flex-col gap-2" data-testid="build-preview">
-        <ul className="flex max-h-[340px] flex-col gap-0.5 overflow-y-auto" aria-label="Epics and Features">
+        <ul className="relative flex max-h-[340px] flex-col gap-0.5 overflow-y-auto" aria-label="Epics and Features">
           {rows.map((row) => (
             <li key={row.id} className="flex min-h-6 items-center gap-1.5 text-sm" style={{ paddingLeft: `${row.depth * 14}px` }}>
               <WorkItemTypeBadge type={row.type} iconOnly />

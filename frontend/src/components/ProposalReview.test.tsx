@@ -492,3 +492,11 @@ describe('ProposalReview: who suggested it', () => {
     expect(screen.queryByTestId('suggestion-origin')).toBeNull();
   });
 });
+
+describe('ProposalReview: no source comment on screen', () => {
+  it('shows no code comment as text (a "//" comment once rendered beside the decision)', () => {
+    vi.mocked(chatApi.checkRewrite).mockReturnValue(new Promise(() => {}));
+    const { container } = render(<Harness proposal={text('The receiver shall lock within 2 s.')} />);
+    expect(container.textContent).not.toMatch(/\/\/\s*Sticky/);
+  });
+});

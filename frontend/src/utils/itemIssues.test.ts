@@ -76,5 +76,10 @@ describe('itemIssues: a suggestion kept with the item', () => {
   it('also applies to an Epic, which has no score to report', () => {
     expect(itemIssues({ type: 'Epic', suggestion: { decision: 'pending' } }).map((issue) => issue.id)).toEqual(['suggestion-waiting']);
   });
+
+  it('names who suggested it: With AI review while the job ran, or the item\'s assistant', () => {
+    expect(itemIssues({ type: 'Feature', suggestion: { decision: 'pending', origin: 'ai_review' } })[0].text).toBe('With AI review suggested a rewrite. Review it before moving on.');
+    expect(itemIssues({ type: 'Requirement', suggestion: { decision: 'pending' } })[0].text).toBe('The assistant suggested a rewrite. Review it before moving on.');
+  });
 });
 

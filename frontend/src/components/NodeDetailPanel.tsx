@@ -1174,7 +1174,7 @@ export function NodeDetailPanel({
       )}
       {/* What the file itself states (the approved mockup, 2026-11-25): a Requirement's type, the file's tags (both written), and the words
           found in the text (TBD, Should...), which are for filtering only and never written. */}
-      {(entry.type === 'Requirement' || entry.fileTags?.length || entry.derivedMarks?.length) && (
+      {(entry.type === 'Requirement' || (entry.fileTags?.length ?? 0) > 0 || (entry.derivedMarks?.length ?? 0) > 0) && (
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm" data-testid="file-details">
           {entry.type === 'Requirement' && (
             <>
