@@ -644,11 +644,13 @@ describe('runPipelineJob', () => {
           localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', seCoverageRef: null, areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', seCoverageRef: null, areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
       ],
       fakeIdempotencyService,
@@ -753,6 +755,7 @@ describe('runPipelineJob', () => {
           traceLinks: [],
           figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
         {
           localId: 'n1',
@@ -771,6 +774,7 @@ describe('runPipelineJob', () => {
           traceLinks: [],
           figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
       ],
       fakeIdempotencyService,
@@ -808,6 +812,47 @@ describe('runPipelineJob', () => {
     const [nodes] = fakeDryRunService.diff.mock.calls[0];
     expect(nodes[0].prompts).toEqual([prompt]);
     expect('prompts' in nodes[1]).toBe(false);
+  });
+
+  it('carries file_tags/requirement_type/derived_marks/description_suggestion from ingestion through to the dry-run diff input', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+          file_tags: ['customer-baseline'],
+          requirement_type: 'Performance',
+          derived_marks: ['TBD', 'Should'],
+          description_suggestion: 'The receiver shall scan every channel within 4 min.',
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const [nodes] = fakeDryRunService.diff.mock.calls[0];
+    expect(nodes[0]).toMatchObject({
+      fileTags: ['customer-baseline'],
+      requirementType: 'Performance',
+      derivedMarks: ['TBD', 'Should'],
+      descriptionSuggestion: 'The receiver shall scan every channel within 4 min.',
+    });
   });
 
   it('carries quality_score/quality_issues/child_type from ingestion through to the dry-run diff input', async () => {
@@ -856,6 +901,7 @@ describe('runPipelineJob', () => {
           qualityCategoryScores: { clarity: 40, testability: 80, atomicity: 90, style: 60, rationale: 20 },
           childType: 'Requirement', traceLinks: [], figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', seCoverageRef: null, areaPath: 'Project\\Area1',
@@ -863,6 +909,7 @@ describe('runPipelineJob', () => {
           qualityScore: undefined, qualityIssues: undefined, qualityCategoryScores: undefined,
           childType: undefined, traceLinks: [], figureIds: [],
           tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], qualityConfidence: null,
+          fileTags: [], requirementType: null, derivedMarks: [], descriptionSuggestion: null,
         },
       ],
       fakeIdempotencyService,

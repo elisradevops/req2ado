@@ -22,7 +22,7 @@ function estimate(overrides: Partial<EtaEstimate> = {}): EtaEstimate {
 describe('ModeCards', () => {
   it('says a cached file takes a few seconds on the SURVEY card, instead of a range that contradicts the side panel', () => {
     render(<ModeCards value="survey" onChange={vi.fn()} baselineEstimate={estimate({ mode: 'baseline', lowerMinutes: 1, upperMinutes: 1 })} surveyEstimate={estimate()} surveyCached />);
-    const card = screen.getByRole('radio', { name: /SURVEY/ });
+    const card = screen.getByRole('radio', { name: /With AI review/ });
     expect(card).toHaveTextContent('A few seconds');
     expect(card).toHaveTextContent('this file was already processed');
     expect(card).not.toHaveTextContent('20 min');
@@ -31,24 +31,24 @@ describe('ModeCards', () => {
 
   it('keeps the measured range on the SURVEY card when the file is not cached', () => {
     render(<ModeCards value="survey" onChange={vi.fn()} baselineEstimate={estimate({ mode: 'baseline', lowerMinutes: 1, upperMinutes: 1 })} surveyEstimate={estimate()} />);
-    expect(screen.getByRole('radio', { name: /SURVEY/ })).toHaveTextContent('20 min – 30 min, typically');
+    expect(screen.getByRole('radio', { name: /With AI review/ })).toHaveTextContent('20 min – 30 min, typically');
   });
 
   it('selects survey when its card is clicked', async () => {
     const onChange = vi.fn();
     render(<ModeCards value="baseline" onChange={onChange} />);
-    await userEvent.click(screen.getByText(/survey/i));
+    await userEvent.click(screen.getByText('With AI review'));
     expect(onChange).toHaveBeenCalledWith('survey');
   });
 
   it('labels the last-used mode only: the label never selects that card or calls onChange', () => {
     const onChange = vi.fn();
     render(<ModeCards value="baseline" onChange={onChange} lastUsed="survey" />);
-    const survey = screen.getByRole('radio', { name: /SURVEY/ });
+    const survey = screen.getByRole('radio', { name: /With AI review/ });
     expect(survey).toHaveTextContent('Last used');
     expect(survey).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).not.toHaveTextContent('Last used');
+    expect(screen.getByRole('radio', { name: /Standard/ })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /Standard/ })).not.toHaveTextContent('Last used');
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -57,11 +57,11 @@ describe('ModeCards', () => {
     expect(screen.queryByText('Last used')).not.toBeInTheDocument();
   });
 
-  it('does not claim BASELINE has no model cost: both modes say the file\'s layout is read by a model first', () => {
+  it('names the modes as the owner did and says both read the file with AI (2026-11-25)', () => {
     render(<ModeCards value="baseline" onChange={vi.fn()} />);
-    expect(screen.queryByText(/no model cost/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).toHaveTextContent('a short model read of the file’s layout runs first (once per file, then reused)');
-    expect(screen.getByRole('radio', { name: /SURVEY/ })).toHaveTextContent('the same short read of the file’s layout first');
+    expect(screen.getByRole('radio', { name: /Standard/ })).toHaveTextContent("The file's own structure and text, with clean titles.");
+    expect(screen.getByRole('radio', { name: /With AI review/ })).toHaveTextContent('plus scoring, acceptance criteria and wording suggestions');
+    expect(screen.getByText('Both modes use AI to read the file.')).toBeInTheDocument();
   });
 
   it('renders "--" for a mode whose estimate has not resolved yet, never a locally-computed number', () => {
@@ -85,28 +85,21 @@ describe('ModeCards', () => {
     expect(screen.getByText('20 min – 30 min, typically')).toBeInTheDocument();
   });
 
-  it('does not switch the selected mode when Enter/Space opens the nested model dropdown on the SURVEY card', async () => {
-    // Real bug found on review: the SURVEY card is a role="radio" DIV (not
-    // a <button>, since it nests a real Select whose own Radix trigger is a
-    // <button> -- a button can't nest a button) with its own onKeyDown
-    // treating Enter/Space as "select this mode." Radix's SelectTrigger
-    // only ever calls preventDefault() on those same keys, never
-    // stopPropagation() -- confirmed against @radix-ui/react-select's own
-    // source -- so without an explicit stopPropagation guard around the
-    // model picker, pressing Enter/Space to OPEN the dropdown bubbled
-    // straight up and silently fired onChange('survey') as a side effect,
-    // even while BASELINE was the one actually selected.
+  it('keeps the model picker outside the cards, so opening it from the keyboard never changes the mode', async () => {
     const onChange = vi.fn();
-    render(
-      <ModeCards value="baseline" onChange={onChange} model="" onModelChange={vi.fn()} availableModels={['qwen2.5:32b']} />,
-    );
+    render(<ModeCards value="survey" onChange={onChange} model="" onModelChange={vi.fn()} availableModels={['qwen2.5:32b']} />);
     const modelTrigger = screen.getByRole('combobox', { name: 'AI model' });
+    expect(modelTrigger.closest('[role="radio"]')).toBeNull();
     modelTrigger.focus();
     await userEvent.keyboard('{Enter}');
-    expect(onChange).not.toHaveBeenCalled();
     await userEvent.keyboard('{Escape}');
     await userEvent.keyboard(' ');
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('shows the model picker only with the AI review chosen', () => {
+    render(<ModeCards value="baseline" onChange={vi.fn()} model="" onModelChange={vi.fn()} availableModels={['qwen2.5:32b']} />);
+    expect(screen.queryByRole('combobox', { name: 'AI model' })).toBeNull();
   });
 
   describe('model facts', () => {
@@ -165,16 +158,9 @@ describe('ModeCards', () => {
     expect(screen.queryByText(/Rough guess/)).not.toBeInTheDocument();
   });
 
-  it('shows a generic example in placeholders, with no numbers, units or score', () => {
+  it('shows no output example: the cards are compact, a name, a time and one line (the approved mockup)', () => {
     render(<ModeCards value="baseline" onChange={vi.fn()} baselineEstimate={undefined} surveyEstimate={undefined} />);
-    const cards = screen.getAllByText(/Example of what lands in Azure DevOps/);
-    expect(cards).toHaveLength(2);
-    expect(screen.getByText(/1\.1 The system shall <requirement text, copied word for word>\./)).toBeInTheDocument();
-    expect(screen.getByText('<short title>')).toBeInTheDocument();
-    expect(screen.getByText('from §<section>')).toBeInTheDocument();
-    for (const card of screen.getAllByRole('radio')) {
-      const example = card.querySelector('[class*="bg-surface-alt"]')?.textContent ?? '';
-      expect(example).not.toMatch(/quality|GHz|MHz|µs|\b\d{2,}\b/i);
-    }
+    expect(screen.queryByText(/Example of what lands in Azure DevOps/)).toBeNull();
+    expect(screen.queryByText('<short title>')).toBeNull();
   });
 });

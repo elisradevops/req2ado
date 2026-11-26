@@ -657,3 +657,14 @@ def test_a_title_cut_off_by_the_token_limit_is_not_kept_as_if_it_were_final(arra
 
     assert result["det0_h2"]["title"] == "Retried det0_h2"  # not "Half a ti"
     assert asked_lists == [list(ROWS), ["det0_h2"]]
+
+
+def test_a_single_field_pass_accepts_a_plain_text_answer_per_id() -> None:
+    """Seen live (2026-11-26): asked for {"id": {"title": ...}}, a local model answered {"id": "..."} for all 121 requirements and every
+    answer was dropped. With one answer field there is no doubt what the text is; with several there is, so it stays refused."""
+    assert normalize_keyed_result({"r1": "Short title", "r2": "Other"}, ["r1", "r2"], ("title",)) == {
+        "r1": {"title": "Short title"},
+        "r2": {"title": "Other"},
+    }
+    assert normalize_keyed_result({"r1": "text"}, ["r1"], ("title", "tags")) == {}
+    assert normalize_keyed_result({"r1": ""}, ["r1"], ("title",)) == {}

@@ -26,8 +26,6 @@ const props = (over: Partial<React.ComponentProps<typeof FileRulesCard>> = {}) =
   view: view(),
   error: null,
   onRelearn: vi.fn(),
-  onStopWaiting: vi.fn(),
-  onReadNow: vi.fn(),
   onSaveEdit: vi.fn().mockResolvedValue(null),
   ...over,
 });
@@ -54,11 +52,10 @@ describe('FileRulesCard', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/the job can start once it is read/i);
   });
 
-  it('shows how long the reading has run, outside the status message, and offers to stop waiting', async () => {
+  it('shows how long the reading has run, outside the status message, with no "Stop waiting" (Start waits for the study)', async () => {
     vi.useFakeTimers({ now: new Date('2026-11-20T10:00:00Z') });
     try {
-      const onStopWaiting = vi.fn();
-      render(<FileRulesCard {...props({ status: 'loading', view: null, startedAt: '2026-11-20T10:00:00Z', onStopWaiting })} />);
+      render(<FileRulesCard {...props({ status: 'loading', view: null, startedAt: '2026-11-20T10:00:00Z' })} />);
       expect(screen.getByTestId('file-rules-elapsed')).toHaveTextContent('00:00 so far');
       await act(async () => {
         vi.advanceTimersByTime(12_000);
@@ -66,23 +63,10 @@ describe('FileRulesCard', () => {
       expect(screen.getByTestId('file-rules-elapsed')).toHaveTextContent('00:12 so far');
       expect(screen.getByRole('status')).not.toHaveTextContent('00:12');
       expect(screen.getByRole('status')).not.toHaveTextContent(/typical/i);
-      act(() => screen.getByRole('button', { name: 'Stop waiting' }).click());
-      expect(onStopWaiting).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('button', { name: 'Stop waiting' })).toBeNull();
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('after stopping, says the job reads the file when it starts, and offers to read it now', async () => {
-    const onReadNow = vi.fn();
-    render(<FileRulesCard {...props({ status: 'cancelled', view: null, modelLabel: 'Default', onReadNow })} />);
-    expect(screen.getByTestId('file-rules-cancelled')).toHaveTextContent(
-      "Stopped waiting. The job will read the file's layout when it starts, which adds time to the job.",
-    );
-    expect(screen.queryByText(/^Model:/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Stop waiting' })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Read now instead' }));
-    expect(onReadNow).toHaveBeenCalledTimes(1);
   });
 
   it('says when the job will use another model than the one that read the file, and offers to read again with it', async () => {

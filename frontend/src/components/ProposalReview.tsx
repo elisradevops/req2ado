@@ -109,6 +109,7 @@ export function ProposalReview({
   onDiscuss,
   onReject,
   onBack,
+  originLabel,
 }: {
   review: ProposalReviewState;
   item: ReviewedItem;
@@ -119,6 +120,8 @@ export function ProposalReview({
   onReject: () => void;
   // Below `lg` the assistant replaces the item, so a way back to it is offered.
   onBack?: () => void;
+  // Who suggested it, when it was not the item's assistant (With AI review, while the job ran): said under the heading.
+  originLabel?: string;
 }): React.ReactElement | null {
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -207,6 +210,11 @@ export function ProposalReview({
         <h3 id={headingId} ref={headingRef} tabIndex={-1} className={cn(LABEL_MICRO, 'text-ink-2 outline-none')}>
           Suggested change
         </h3>
+        {originLabel && (
+          <span className="text-xs text-ink-3" data-testid="suggestion-origin">
+            {originLabel}
+          </span>
+        )}
       </div>
       {strip && (
         <p data-testid="grade-line" className="text-sm font-medium text-ink-1">
@@ -298,7 +306,7 @@ export function ProposalReview({
         </div>
       )}
 
-      // Sticky: the decision stays in reach however long the comparison above it is.
+      {/* Sticky: the decision stays in reach however long the comparison above it is. */}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-hairline bg-surface py-2.5">
         <span className="inline-flex">
           <Button size="sm" onClick={onAcceptClick} disabled={disabled} className={newTitle ? 'rounded-e-none' : undefined}>

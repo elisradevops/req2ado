@@ -1704,3 +1704,40 @@ describe('JobsController suggestion routes (DESIGN.md §11.4.6)', () => {
     expect(other.setSuggestion).not.toHaveBeenCalled();
   });
 });
+
+describe('JobsController.changeDiffEntryType', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+
+  it('delegates the new type to jobsService.changeDiffEntryType for the owner of the job', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      changeDiffEntryType: jest.fn().mockResolvedValue([{ localId: 'n0', type: 'Epic', retypedFrom: 'Feature' }]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const result = await controller.changeDiffEntryType('job-1', 'n0', TEST_USER, 'Epic');
+    expect(jobsService.changeDiffEntryType).toHaveBeenCalledWith('job-1', 'n0', 'Epic');
+    expect((result.dryRunDiff as { type: string }[])[0].type).toBe('Epic');
+  });
+
+  it('refuses a request without a type, before touching the job', async () => {
+    const jobsService = { getById: jest.fn(), changeDiffEntryType: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    await expect(controller.changeDiffEntryType('job-1', 'n0', TEST_USER, undefined)).rejects.toThrow('type is required');
+    expect(jobsService.changeDiffEntryType).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController.getFileReading', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+
+  it('returns the reading of the file the job was built from, to the owner only', async () => {
+    const answer = { reading: { kind: 'requirements_spec' }, codes: ['PWR-1'] };
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }), getFileReading: jest.fn().mockResolvedValue(answer) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    await expect(controller.getFileReading('job-1', TEST_USER)).resolves.toEqual(answer);
+    jobsService.getById.mockResolvedValue({ id: 'job-1', userId: 'someone-else' });
+    await expect(controller.getFileReading('job-1', TEST_USER)).rejects.toThrow('not found');
+    expect(jobsService.getFileReading).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1287,7 +1287,7 @@ describe('JobDetail', () => {
 
     renderAt('job-20');
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
     expect(screen.queryByText(/already written to azure devops/i)).not.toBeInTheDocument();
   });
 
@@ -1380,7 +1380,7 @@ describe('JobDetail', () => {
 
     renderAt('job-24');
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /^validate$/i })).not.toBeInTheDocument();
   });
 
@@ -2006,7 +2006,7 @@ describe('JobDetail', () => {
     );
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-3', status: 'running', dryRunDiff: null } as any);
     renderAt('job-3');
-    await waitFor(() => expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Write\b.*Azure DevOps$/i })).not.toBeInTheDocument());
   });
 
   it('bulk-excludes only rows matching the current text filter, sequentially (not concurrently)', async () => {
@@ -2102,10 +2102,10 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /write row one/i }), jobsApi.setDiffEntryExcluded as never);
 
     await screen.findByText(message, {}, { timeout: 8000 });
-    expect(screen.getByRole('checkbox', { name: /exclude row one/i })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /write row one/i })).toBeChecked(); // refused: it is still written
   });
 
   it('shows an error toast when toggling exclude fails, instead of failing silently', async () => {
@@ -2122,7 +2122,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /write row one/i }), jobsApi.setDiffEntryExcluded as never);
 
     // findByText's own timeout, not the global asyncUtilTimeout (setup.ts) --
     // that default is deliberately kept under ToastProvider's 4400ms
@@ -2178,7 +2178,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(newTileValue()).toBe('5'));
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /write row one/i }), jobsApi.setDiffEntryExcluded as never);
 
     // Post-exclusion count from the refetch -- proves handleToggleExclude
     // re-read getSummary rather than leaving the stale mount-time value.
@@ -2224,7 +2224,7 @@ describe('JobDetail', () => {
     expect(within(tools).queryByRole('button', { name: /reject|write to azure/i })).toBeNull();
     const bar = screen.getByRole('region', { name: 'Review decision' });
     expect(within(bar).getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
-    expect(within(bar).getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument();
   });
 
   it('puts the tools first and the decisions last in the DOM: the write bar follows the review, so a keyboard user meets the items before Write', async () => {
@@ -2233,12 +2233,12 @@ describe('JobDetail', () => {
 
     renderAt('job-10');
     const tools = await screen.findByRole('group', { name: 'Job tools' });
-    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    const write = screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i });
     const reject = screen.getByRole('button', { name: /^reject$/i });
     expect(tools.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // the counterpart decision sits beside Write, before it
     expect(reject.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toHaveLength(1);
   });
 
   it('offers the items as a CSV (an Azure DevOps tree export) once the job has items, and downloads it', async () => {
@@ -2426,14 +2426,14 @@ describe('JobDetail', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
 
     renderAt('job-10');
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
     // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
     // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops/i)).toBeInTheDocument());
   });
@@ -2449,11 +2449,11 @@ describe('JobDetail', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
 
     renderAt('job-10e');
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops\. some items started in their type's default state/i)).toBeInTheDocument());
     expect(screen.getByText(/see the audit tab/i)).toBeInTheDocument();
@@ -2468,14 +2468,14 @@ describe('JobDetail', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
 
     renderAt('job-10b');
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
     // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
     // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops, linked 2 that were already there/i)).toBeInTheDocument());
   });
@@ -2499,19 +2499,19 @@ describe('JobDetail', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
 
     renderAt('job-10c');
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
     await waitFor(() => expect(replayStage).toBeDefined());
     const callsBeforeReplay = getJobSpy.mock.calls.length;
     await act(async () => replayStage!('diff_ready'));
 
     expect(getJobSpy.mock.calls.length).toBe(callsBeforeReplay);
-    expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Write\b.*Azure DevOps$/i })).not.toBeInTheDocument();
   });
 
   it('moves on from writing when the write finishes on the server and this page did not start it', async () => {
@@ -2556,11 +2556,11 @@ describe('JobDetail', () => {
 
     renderAt('job-10d');
     await waitFor(() => expect(onStage).toBeDefined());
-    expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Write\b.*Azure DevOps$/i })).not.toBeInTheDocument();
 
     await act(async () => onStage!('diff_ready'));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
   });
 
   describe('final write summary', () => {
@@ -2587,9 +2587,9 @@ describe('JobDetail', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
       useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
       renderAt(jobId);
-      await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
       const { default: userEvent } = await import('@testing-library/user-event');
-      await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
       return userEvent;
     }
 
@@ -2647,7 +2647,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeEnabled();
     });
 
     const jobOf = (jobId: string, extra: Record<string, unknown> = {}) =>
@@ -2659,7 +2659,7 @@ describe('JobDetail', () => {
     };
     const writeDialog = () => screen.queryByRole('dialog', { name: /write these items to azure devops/i });
 
-    const headerWriteButton = () => screen.getByRole('button', { name: /^write to azure devops$/i, hidden: true });
+    const headerWriteButton = () => screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i, hidden: true });
 
     it('Cancel returns focus to the header write button', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws20'));
@@ -2733,7 +2733,7 @@ describe('JobDetail', () => {
       }
       expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeEnabled();
     });
 
     it('a failed (non-timeout) preview keeps the generic message', async () => {
@@ -2750,7 +2750,7 @@ describe('JobDetail', () => {
       const user = await openWriteDialog('job-ws26');
       expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeEnabled();
     });
 
     it('entries the server reports as written get the written lock in the details dialog', async () => {
@@ -2773,7 +2773,7 @@ describe('JobDetail', () => {
       const user = await openWriteDialog('job-ws4');
 
       await user.click(await screen.findByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      const button = screen.getByRole('button', { name: /^write to azure devops$/i });
+      const button = screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i });
       expect(button).toBeDisabled();
       expect(button).toHaveAccessibleDescription(/checking what will be written/i);
     });
@@ -2842,7 +2842,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeEnabled();
     });
 
     it('drops a late answer from an earlier opening of the dialog', async () => {
@@ -2853,7 +2853,7 @@ describe('JobDetail', () => {
       const user = await openWriteDialog('job-ws8');
       await user.keyboard('{Escape}');
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
-      await user.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      await user.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
       await act(async () => b.resolve(previewOf({ createdTotal: 7, createdLocalIds: [], createdByType: { Requirement: 7 } })));
       expect(await screen.findByText('7 new work items: 7 Requirements.')).toBeInTheDocument();
 
@@ -2870,7 +2870,7 @@ describe('JobDetail', () => {
       await screen.findByText('2 new work items: 2 Requirements.');
       await user.keyboard('{Escape}');
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
-      await user.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      await user.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
     });
@@ -2898,9 +2898,9 @@ describe('JobDetail', () => {
           </MemoryRouter>
         </ToastProvider>,
       );
-      await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeInTheDocument());
       const { default: user } = await import('@testing-library/user-event');
-      await user.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      await user.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
       expect(writeDialog()).toBeInTheDocument();
 
       await act(async () => fireEvent.click(screen.getByText('open b')));
@@ -2947,7 +2947,7 @@ describe('JobDetail', () => {
       await user.click(await screen.findByRole('button', { name: 'Review in tree' }));
       await user.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
 
-      await user.click(await screen.findByRole('button', { name: /^write to azure devops$/i }));
+      await user.click(await screen.findByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
       expect(await screen.findByText('Review: 2 marked reviewed from a warning list.')).toBeInTheDocument();
     });
@@ -4415,7 +4415,7 @@ describe('JobDetail', () => {
       await userEvent.click(within(dialog).getByRole('button', { name: 'Approve 5 clean items' }));
       await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', CLEAN_IDS, true));
 
-      await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
       expect(
         await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
       ).toBeInTheDocument();
@@ -4463,7 +4463,7 @@ describe('JobDetail', () => {
         const userEvent = await render80({ mode: 'baseline', dryRunDiff: baselineRows(), warnings: WARNED });
         await userEvent.click(await screen.findByRole('button', { name: 'Approve 3 clean items' }));
         const dialog = await screen.findByRole('dialog', { name: 'Approve 3 clean items?' });
-        expect(dialog).toHaveTextContent(/copied word for word and are not scored/i);
+        expect(dialog).toHaveTextContent(/keep the file's own text and are not scored/i);
         expect(dialog.textContent).not.toMatch(/low score|low grounding|model confidence|with scores?\b|out-of-date/i);
         expect(dialog).toHaveTextContent('3 items left out: 1 with warnings, 2 Epics and Features, which you check one by one.');
         expect(within(dialog).getByRole('button', { name: 'Approve 3 clean items' })).toBeDisabled();
@@ -4713,7 +4713,7 @@ describe('JobDetail', () => {
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-80', CLEAN_IDS, false);
         await screen.findByText(/failed to update review state/i);
 
-        await userEvent.click(await screen.findByRole('button', { name: /^write to azure devops$/i }));
+        await userEvent.click(await screen.findByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
         expect(
           await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
         ).toBeInTheDocument();
@@ -4726,7 +4726,7 @@ describe('JobDetail', () => {
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockReturnValue(save.promise as never);
         await approveAll(userEvent);
 
-        await userEvent.click(await screen.findByRole('button', { name: /^write to azure devops$/i }));
+        await userEvent.click(await screen.findByRole('button', { name: /^Write\b.*Azure DevOps$/i }));
 
         expect(
           await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
@@ -4741,8 +4741,8 @@ describe('JobDetail', () => {
         } as never);
         await approveAll(userEvent);
 
-        await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude clean three/i }), jobsApi.setDiffEntryExcluded as never);
-        await waitFor(() => expect(screen.getByRole('checkbox', { name: /exclude clean three/i })).toBeChecked());
+        await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /write clean three/i }), jobsApi.setDiffEntryExcluded as never);
+        await waitFor(() => expect(screen.getByRole('checkbox', { name: /write clean three/i })).not.toBeChecked()); // left out
         await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
 
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(2));
@@ -5295,16 +5295,86 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     const events = await import('../api/events');
     vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
     renderAt(String(job.id));
-    return screen.findByRole('button', { name: /write to azure devops/i });
+    // The bar's one button names the next step: "Fix N items" while something blocks the write, then "Write N items" (owner decision, 2026-11-25).
+    return screen.findByRole('button', { name: /^(Write\b.*Azure DevOps|Fix \d+ items?)$/i });
   }
   const duplicateIds = (nodeIds: string[]) => ({
     kind: 'duplicate_customer_id', severity: 'needs_review', nodeIds, detail: {}, raw: 'Customer ID reported on several requirements.',
   });
 
-  it('keeps Write focusable but aria-disabled, states the reason in text, and does not open the dialog while a fix item is open', async () => {
+  it('offers a filter chip per review mark, with its count, that narrows the tree to those items (owner decision, 2026-11-25)', async () => {
+    await mount({
+      id: 'marks-1',
+      dryRunDiff: [req('r1', { derivedMarks: ['TBD'] }), req('r2', { derivedMarks: ['Should'] }), req('r3')],
+      warnings: [],
+    });
+    expect(screen.getByText('Title r3')).toBeInTheDocument();
+    const tbd = screen.getByRole('button', { name: 'TBD · 1' });
+    expect(screen.getByRole('button', { name: 'Should · 1' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Will · / })).toBeNull(); // no item carries it: no chip
+    await userEvent.click(tbd);
+    expect(tbd).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Title r1')).toBeInTheDocument();
+    expect(screen.queryByText('Title r3')).not.toBeInTheDocument();
+    await userEvent.click(tbd);
+    expect(await screen.findByText('Title r3')).toBeInTheDocument();
+  });
+
+  it('offers "Suggestion" for items with a suggestion waiting and "Left out" for items not in the write, each narrowing the tree', async () => {
+    await mount({
+      id: 'chips-2',
+      dryRunDiff: [
+        req('r1', { suggestion: { id: 's1', proposedTitle: 'T', proposedDescription: 'D', decision: 'pending', origin: 'ai_review' } }),
+        req('r2', { excluded: true }),
+        req('r3'),
+      ],
+      warnings: [],
+    });
+    const suggestion = screen.getByRole('button', { name: 'Suggestion · 1' });
+    const leftOut = screen.getByRole('button', { name: 'Left out · 1' });
+    await userEvent.click(suggestion);
+    expect(screen.getByText('Title r1')).toBeInTheDocument();
+    expect(screen.queryByText('Title r3')).not.toBeInTheDocument();
+    await userEvent.click(leftOut);
+    expect(leftOut).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Title r2')).toBeInTheDocument();
+    expect(screen.queryByText('Title r1')).not.toBeInTheDocument();
+  });
+
+  it('shows how the file was read: "About this file" in the header with its decisions, and "Spelling fixed" on the item whose heading was corrected', async () => {
+    vi.spyOn(jobsApi, 'getJobFileReading').mockResolvedValue({
+      reading: {
+        kind: 'requirements_spec', coverTitle: null, requirements: 1, withIds: 1, epics: 1, features: 0, outline: [], outlineMore: 0,
+        decisions: [{ headingId: 'b9', action: 'drop_wrapper', title: 'Requirements', newTitle: null, reason: 'Only groups.', decision: 'accept' }],
+        fixes: [{ headingId: 'b4', from: 'Enclousure', to: 'Enclosure' }], examples: [], leftOut: [], context: [],
+      },
+      codes: ['ENC-1'],
+    });
+    await mount({ id: 'reading-1', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Enclosure' })], warnings: [] });
+    expect(await screen.findByText('Spelling fixed')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'About this file' }));
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Remove the level “Requirements”: accepted.');
+  });
+
+  it('lists a rename in "About this file" as it stands now: kept once its item has the file\'s title back', async () => {
+    vi.spyOn(jobsApi, 'getJobFileReading').mockResolvedValue({
+      reading: {
+        kind: 'requirements_spec', coverTitle: null, requirements: 0, withIds: 0, epics: 1, features: 0, outline: [], outlineMore: 0,
+        decisions: [{ headingId: 'b4', action: 'rename', title: 'Design and construction', newTitle: 'Environment and safety', reason: 'Named from its sections.', decision: 'accept' }],
+        fixes: [], examples: [], leftOut: [], context: [],
+      },
+      codes: [],
+    });
+    await mount({ id: 'reading-2', dryRunDiff: [req('g_b4', { type: 'Epic', title: 'Design and construction' })], warnings: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'About this file' }));
+    expect(await screen.findByTestId('about-decisions')).toHaveTextContent('Rename “Design and construction” to “Environment and safety”: kept as the file has it.');
+  });
+
+  it('names the next step, "Fix 2 items", while a fix item is open: states the reason in text, and never opens the write dialog', async () => {
     const write = await mount({ id: 'gate-1', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
-    expect(write).toHaveAttribute('aria-disabled', 'true');
+    expect(write).toHaveAccessibleName('Fix 2 items');
     expect(write).not.toBeDisabled();
+    expect(screen.queryByRole('button', { name: /^Write\b.*Azure DevOps$/i })).not.toBeInTheDocument(); // the yellow control appears only when the write can happen
     expect(screen.getByText(fullText('2 items to fix before writing'))).toBeInTheDocument();
 
     await userEvent.click(write);
@@ -5356,14 +5426,14 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     vi.mocked(jobsApi.setWarningsAcknowledged).mockResolvedValue({ warnings: [] } as any);
     const noId = { kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['r1', 'r2'], detail: {}, raw: 'Requirement has no Customer ID.' };
     const write = await mount({ id: 'gate-7', dryRunDiff: [req('r1'), req('r2')], warnings: [noId] });
-    expect(write).toHaveAttribute('aria-disabled', 'true');
+    expect(write).toHaveAccessibleName('Fix 2 items');
 
     await userEvent.click(screen.getByRole('button', { name: 'Accept 2 without a Customer ID' }));
 
     expect(jobsApi.setWarningsAcknowledged).toHaveBeenCalledWith('gate-7', { kind: 'missing_source_reference', raws: undefined, acknowledged: true });
     // Said as what was accepted, not as a generic "handled".
     expect(await screen.findByText('Accepted 2 without a Customer ID.')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('button', { name: /write to azure devops/i })).not.toHaveAttribute('aria-disabled', 'true'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toBeEnabled());
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
   });
 
@@ -5394,7 +5464,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
   it('takes a blocked Write to the warning itself when the blocker has no tree items, instead of an empty tree', async () => {
     const zero = (raw: string) => ({ kind: 'zero_nodes', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw });
     const write = await mount({ id: 'gate-empty', dryRunDiff: [req('r1')], warnings: [zero('Section 3 produced 0 work items.'), zero('Section 7 produced 0 work items.')] });
-    expect(write).toHaveAttribute('aria-disabled', 'true');
+    expect(write).toHaveAccessibleName(/^Fix \d+ items?$/);
     await userEvent.click(write);
     await waitFor(() => expect(document.activeElement).toBe(document.getElementById('integrity-warnings')));
     // The tree is not narrowed to nothing.
@@ -5433,14 +5503,14 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
   });
 
   describe('the sticky write bar (W3)', () => {
-    it('comes after the tree in the DOM, as a normal last item (not floating)', async () => {
+    it('comes after the tree in the DOM and stays pinned to the bottom of the screen (owner decision, 2026-11-25)', async () => {
       const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
       const bar = screen.getByRole('region', { name: 'Review decision' });
       expect(bar).toContainElement(write);
-      expect(bar).not.toHaveClass('sticky');
+      expect(bar).toHaveClass('sticky', 'bottom-0');
       const tree = document.getElementById('proposed-tree')!;
       expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toHaveLength(1);
     });
 
     it('carries the blocker count in text, linked to Write, and a blocked Write still jumps to the first blocker', async () => {
@@ -5448,21 +5518,21 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
       const bar = screen.getByRole('region', { name: 'Review decision' });
       const reason = within(bar).getByText(fullText('2 items to fix before writing'));
       expect(write.getAttribute('aria-describedby')).toBe(reason.id);
-      expect(write).toHaveAttribute('aria-disabled', 'true');
+      expect(write).toHaveAccessibleName(/^Fix \d+ items?$/);
       await userEvent.click(write);
       expect(await screen.findByRole('checkbox', { name: /hide reviewed/i })).toBeInTheDocument();
     });
 
     it('keeps Write the only signal-yellow control on the page', async () => {
       await mount({ id: 'bar-3', dryRunDiff: [req('r1')], warnings: [] });
-      const write = screen.getByRole('button', { name: /write to azure devops/i });
+      const write = screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i });
       const yellow = Array.from(document.querySelectorAll('button')).filter((b) => /\bbg-cta\b|\bbg-signal\b/.test(b.className));
       expect(yellow).toEqual([write]);
     });
 
     it('gives the bar 44 px targets below md', async () => {
       await mount({ id: 'bar-4', dryRunDiff: [req('r1')], warnings: [] });
-      expect(screen.getByRole('button', { name: /write to azure devops/i })).toHaveClass('max-md:min-h-11');
+      expect(screen.getByRole('button', { name: /^Write\b.*Azure DevOps$/i })).toHaveClass('max-md:min-h-11');
       expect(screen.getByRole('button', { name: /^reject$/i })).toHaveClass('max-md:min-h-11');
     });
 
@@ -5474,7 +5544,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
       renderAt(`bar-${status}`);
       await screen.findByRole('group', { name: 'Job tools' });
       expect(screen.queryByRole('region', { name: 'Review decision' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /write to azure devops/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Write\b.*Azure DevOps$/i })).not.toBeInTheDocument();
     });
   });
 

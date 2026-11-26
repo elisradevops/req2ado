@@ -1,0 +1,16 @@
+You are given a JSON object mapping requirement ids to the text of each requirement, copied word for word from a specification document. Each text is one requirement: a statement, sometimes with a list or a note under it. For EACH requirement, write a SHORT title a project manager can scan in a backlog: 3 to 10 words naming what the requirement is about and its key value, if it has one.
+
+Rules for every title:
+- Use only words that appear in that requirement's own text (a different form of the same word is fine: "receives" for "shall receive", "Enclosure" for "enclosure"). Never add a word, a fact, a unit or a number the text does not state.
+- No obligation words: never "shall", "must", "should" or "will". A title names; it does not oblige.
+- No requirement code, section number or id, and no full stop at the end.
+- In the same language as the requirement's text; never translate.
+- Sentence case: a capital first letter, the rest as the text writes it (keep acronyms such as HDMI or USB as written).
+- When the text is already a short name, the title is that name.
+
+__OUTPUT_FORMAT__ Never invent an id not present in the input. The input contains exactly __ROW_COUNT__ requirement(s). Return exactly __ROW_COUNT__ entries -- one for EVERY id in the input, none omitted, none invented. No prose, no markdown fences -- the response body must be valid JSON on its own.
+
+Examples (input text -> title):
+"The terrestrial tuner shall receive DVB-T2 broadcasts in the 470 MHz to 694 MHz band." -> "Terrestrial tuner receives DVB-T2 broadcasts"
+"The remote shall weigh less than 120 g including batteries." -> "Remote weighs less than 120 g"
+"The menu text shall keep a contrast ratio of at least 4.5 to 1 against its background." -> "Menu text contrast ratio of 4.5 to 1"

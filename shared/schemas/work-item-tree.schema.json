@@ -96,6 +96,24 @@
             ]
           }
         },
+        "file_tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tags the file itself states for this item (an ADO-export Tags column). Written to System.Tags. Never derived or invented."
+        },
+        "requirement_type": {
+          "type": ["string", "null"],
+          "description": "The Requirement Type the file itself states for this Requirement. It wins over any model-proposed type; null when the file states none."
+        },
+        "derived_marks": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["TBD", "Should", "Will", "No obligation"] },
+          "description": "Review marks read from a Requirement's own text, for filtering in the review. Never written to Azure DevOps."
+        },
+        "description_suggestion": {
+          "type": ["string", "null"],
+          "description": "With AI review's suggested wording for this item. Offered to the reviewer, never applied by itself; null when there is none."
+        },
         "figure_ids": {
           "type": "array",
           "items": { "type": "string" },

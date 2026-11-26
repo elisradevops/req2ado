@@ -8,13 +8,24 @@ alone, so the same file always gives the same tree:
   * **the requirement unit**: a requirement opens with the document's own code shape (code_shape.py) and runs until the next unit or
     heading, with everything printed under it -- its text, its lists, its Notes and its trace (a label such as "Satisfies:" and the
     parent codes). Once its trailing parts began, a new statement with an obligation and no code is a requirement of its own;
-  * **sections**: every numbered heading of a chapter that holds requirements is a Feature, nested by its number; a section's text
-    before its first requirement is its description; every requirement is a Requirement under its own section, including those
-    stated directly under a section that also has subsections;
-  * **a section whose whole body is a one-line marker** ("None.", "Not applicable.") is an empty Feature, never a Requirement;
-  * **a chapter with no requirements** before the requirement chapters describes the document: its prose is kept as one Feature's
-    description (context), and its sections that hold tables (revision history, references, abbreviations) are front matter, left
-    out and reported; a chapter with no requirements after them (a traceability listing) is back matter, left out and reported.
+  * **the ladder** (the owner's, as the job builds the TV-remote mock): a section that holds requirements is a Feature, and the
+    sections under a Feature are Features; a section made only of sections is an Epic, under an Epic or at the top; only Epics are
+    roots, so a Feature at the top goes under an Epic named from the cover title; so do several chapters when the document has
+    context text (it describes the whole document, not its first chapter). A coded sub-item ("men_3.a") is a sub-Requirement
+    of its requirement. Every requirement is a Requirement under its own section, including those stated directly under a section
+    that also has subsections;
+  * **titles** are clean: no section number, no code in parentheses ("SOFTWARE (SW_DESIGN)"), an all-capitals heading in sentence
+    case with the document's own acronyms kept, and the study's heading spelling fixes applied;
+  * **descriptions** are the document's text: a requirement's is its text without its code (the code is the Customer ID), with its
+    lists and Notes, then its trace set apart by a blank line; an Epic's or Feature's is only the section's own text before its first
+    requirement, and empty when it has none (never its title repeated);
+  * **a section whose whole body is a one-line marker** ("None.", "Not applicable.") is an empty Feature or left out, as the study
+    decided, never a Requirement;
+  * **a chapter with no requirements** before the requirement chapters describes the document: its prose (only the sections the study
+    confirmed as context, when it ran) is the top Epic's description, and its sections that hold tables (revision history,
+    references, abbreviations) are front matter, left out and reported; a chapter with no requirements after them (a traceability
+    listing) is back matter, left out and reported;
+  * **proposals** the study made (remove a generic level, rename it) are applied only when the user accepted them.
 
 Used by BASELINE (tree_builder.build_baseline_tree) and SURVEY (llm_leveling) alike, whenever the document has a learned code shape and
 numbered headings; any other document is built as before."""
@@ -85,6 +96,11 @@ class DocumentGrammar:
     context_heading_ids: frozenset[str] = frozenset()
     back_matter_heading_ids: frozenset[str] = frozenset()
     source: Literal["code", "model"] = "code"
+    # From the study's document profile: the cover title (names an Epic made for Features at the top), heading spelling fixes (heading
+    # block id -> fixed text after its number, applied automatically) and the proposals the user accepted (heading block id -> proposal).
+    cover_title: str | None = None
+    spelling: tuple[tuple[str, str], ...] = ()
+    accepted: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass
@@ -150,7 +166,16 @@ def learn_grammar(doc: CanonicalDoc, rulebook: object | None = None) -> Document
         context_heading_ids=frozenset(getattr(document, "context_headings", ()) or ()),
         back_matter_heading_ids=frozenset(getattr(document, "back_matter_headings", ()) or ()),
         source=source,
+        cover_title=getattr(document, "cover_title", None),
+        spelling=tuple(getattr(document, "spelling_fixes", ()) or ()),
+        accepted=_accepted_proposals(document),
     )
+
+
+def _accepted_proposals(document: object) -> tuple[tuple[str, object], ...]:
+    """The proposals the user accepted (a proposal with no decision keeps the file's original: owner decision)."""
+    decisions = dict(getattr(document, "proposal_decisions", ()) or ())
+    return tuple((p.block_id, p) for p in getattr(document, "proposals", ()) or () if decisions.get(p.block_id) == "accept")
 
 
 def _learn_part_labels(doc: CanonicalDoc, code: CodeShape) -> tuple[str, ...]:
@@ -226,11 +251,16 @@ class _Unit:
     parts: list[str] = field(default_factory=list)
     trace: list[str] = field(default_factory=list)  # the trace printed under it ("Satisfies:" and its parent codes), verbatim
     in_parts: bool = False
+    parent_code: str | None = None  # a coded sub-item ("men_3.a"): the code of the requirement it belongs to ("men_3")
+
+    def statement(self) -> str:
+        """The requirement's own text without its code (the code is its Customer ID), with its lists and Notes."""
+        return "\n".join([self.title_text or self.body, *self.parts])
 
     def text(self) -> str:
-        """The requirement's text with its lists and Notes, then its trace set apart by a blank line: the trace stays in the description,
-        word for word, but never runs into the requirement itself."""
-        statement = "\n".join([self.body, *self.parts])
+        """The statement, then its trace set apart by a blank line: the trace stays in the description, word for word, but never runs
+        into the requirement itself."""
+        statement = self.statement()
         return f"{statement}\n\n{chr(10).join(self.trace)}" if self.trace else statement
 
 
@@ -255,6 +285,9 @@ class _Builder:
         self.context: list[str] = []
         self.empty: list[str] = []
         self.fresh: dict[str, bool] = {}
+        self.acronyms = document_acronyms(doc)
+        self.context_text: list[str] = []  # the context chapter's own text: the top Epic's description
+        self.top: WorkItemNode | None = None
 
     # --- units ------------------------------------------------------------------------------------------------------------------------
     def _opens_part(self, text: str) -> bool:
@@ -265,22 +298,49 @@ class _Builder:
         """(the section's own text before its first requirement, its requirement units), in order."""
         intro: list[Block] = []
         units: list[_Unit] = []
+        known: set[str] = set()
         for block in section.body:
             text = block.text
             lead = self.g.code.leading(text)
+            sub = None if lead is not None else self._sub_item(text, known)
             current = units[-1] if units else None
             if lead is not None:
                 units.append(_Unit(code=lead[0], body=text.strip(), blocks=[block], title_text=lead[1].strip()))
+                known.add(lead[0])
+            elif sub is not None:
+                units.append(_Unit(code=sub[0], body=text.strip(), blocks=[block], title_text=sub[1].strip(), parent_code=sub[2]))
             elif self._new_uncoded_statement(text, current):
                 units.append(_Unit(code=None, body=text.strip(), blocks=[block], title_text=text.strip()))
             elif current is None:
                 intro.append(block)
             else:
-                (current.trace if self._is_trace(text, current) else current.parts).append(text.strip())
+                if self._is_trace(text, current):
+                    current.trace.append(text.strip())
+                else:
+                    current.parts.append(_list_item(block))
+                current.blocks.append(block)
+                if self._opens_part(text) or _is_code_list(text):
+                    current.in_parts = True
                 current.blocks.append(block)
                 if self._opens_part(text) or _is_code_list(text):
                     current.in_parts = True
         return intro, units
+
+    def _sub_item(self, text: str, known: set[str]) -> tuple[str, str, str] | None:
+        """A coded sub-item: a code of this section's requirements followed by ".a" or ".1" ("men_3.a Picture ..."). Returns (its code, its
+        text, its requirement's code). Only after that requirement, so a trace code such as "SYS_12.3" is never one."""
+        match = re.match(rf"^\s*(({self.g.code.pattern})\.(?:[a-z]|\d{{1,2}}))(?![\w-])\s+(\S.*)$", text, re.DOTALL)
+        if match is None or match.group(2) not in known:
+            return None
+        return match.group(1), match.group(3), match.group(2)
+
+    def _title(self, section: _Section) -> str:
+        """The section's clean title (see the module docstring); an accepted rename replaces it."""
+        accepted = dict(self.g.accepted).get(section.heading.id)
+        if accepted is not None and getattr(accepted, "action", None) == "rename":
+            return accepted.new_title
+        text = dict(self.g.spelling).get(section.heading.id) or (parse_numbering(section.title)[1] if section.number else section.title)
+        return clean_heading(text, self.acronyms)
 
     def _is_trace(self, text: str, current: _Unit) -> bool:
         """A trace line: a learned part label followed by nothing but codes ("Satisfies: GCS_2 SYS_11"), or a bare list of codes that
@@ -342,18 +402,10 @@ class _Builder:
         return [_table_to_html(t) for t in tables]
 
     def build(self, preamble: list[Block], roots: list[_Section]) -> None:
-        title_block = next((b for b in self.doc.blocks if b.kind == BlockKind.TITLE), None)
-        epic_ref = (title_block or (roots[0].heading if roots else self.doc.blocks[0])).source_ref.model_copy(update={"section_path": []})
-        description = self.doc_title
-        for block in preamble:
-            if block.kind != BlockKind.TITLE:
-                description = assemble_description(description, block.text)
-        epic = self._node("g_epic", WorkItemType.EPIC, None, self.doc_title, description, epic_ref)
-
         # A chapter whose coded paragraphs only repeat codes already stated (a traceability listing written as paragraphs) holds no
         # requirement of its own: it is back matter, not a second copy of the requirements.
         seen: set[str] = set()
-        self.fresh: dict[str, bool] = {}
+        self.fresh = {}
         for root in roots:
             codes = [lead[0] for s in root.subtree() for b in s.body if (lead := self.g.code.leading(b.text)) is not None]
             self.fresh[root.heading.id] = any(c not in seen for c in codes)
@@ -361,13 +413,37 @@ class _Builder:
         with_units = [r for r in roots if self._holds_units(r)]
         first_req = roots.index(with_units[0]) if with_units else len(roots)
         last_req = roots.index(with_units[-1]) if with_units else -1
+        top_level: list[WorkItemNode] = []
         for i, root in enumerate(roots):
             if root.heading.id in self.g.back_matter_heading_ids or (i > last_req and not self._holds_units(root)):
                 self._leave_out(root)
             elif not self._holds_units(root) or root.heading.id in self.g.context_heading_ids:
-                self._context_chapter(root, epic, before_requirements=i < first_req)
+                self._context_chapter(root, before_requirements=i < first_req)
             else:
-                self._section(root, epic, [])
+                top_level += self._section(root, None, [])
+        # Only Epics are roots: a Feature at the top (a chapter that states requirements itself) goes under an Epic named from the cover.
+        # The document's context describes the whole document, so with several chapters it is that Epic's too, never the first chapter's.
+        loose = [n for n in top_level if n.type != WorkItemType.EPIC]
+        epics = [n for n in top_level if n.type == WorkItemType.EPIC]
+        extra = [b.text for b in preamble if b.kind != BlockKind.TITLE]
+        if loose or not epics or (len(epics) > 1 and (self.context_text or extra)):
+            title_block = next((b for b in self.doc.blocks if b.kind == BlockKind.TITLE), None)
+            ref = (title_block or (roots[0].heading if roots else self.doc.blocks[0])).source_ref.model_copy(update={"section_path": []})
+            title = self.g.cover_title or self.doc_title
+            epic = self._node("g_epic", WorkItemType.EPIC, None, title, "", ref)
+            self.nodes.insert(0, self.nodes.pop())  # the document's Epic comes first
+            for node in top_level:
+                node.parent_local_id = epic.local_id
+            self.top = epic
+        else:
+            self.top = epics[0]
+        self._describe(self.top, [*self.context_text, *extra])
+
+    def _describe(self, node: WorkItemNode, texts: list[str]) -> None:
+        for text in texts:
+            node.description = assemble_description(node.description, text) if node.description else text
+        node.fidelity_hash = self.hash_description(node.description)
+        node.identity_hash = self.hash_identity(node.description, node.source_ref)
 
     def _holds_units(self, section: _Section) -> bool:
         if not self.fresh.get(section.heading.id, True):
@@ -377,10 +453,11 @@ class _Builder:
     def _leave_out(self, section: _Section) -> None:
         self.left_out.append((section.title[:80], section.heading.source_ref.page, _last_page(section)))
 
-    def _context_chapter(self, root: _Section, epic: WorkItemNode, before_requirements: bool) -> None:
-        """A chapter with no requirements: one Feature whose description holds its prose; its sections with tables (revision history,
-        references, abbreviations), before the requirement chapters, are front matter and left out."""
-        description = root.title
+    def _context_chapter(self, root: _Section, before_requirements: bool) -> None:
+        """A chapter with no requirements describes the document: its text is the top Epic's description. When the study confirmed which
+        sections are context, only those are; the chapter's other text is left out and reported. Its sections with tables (revision
+        history, references, abbreviations), before the requirement chapters, are front matter and left out."""
+        confirmed = self.g.context_heading_ids
         if before_requirements and root.tables:
             # A table directly under the chapter heading (a document history) is front matter too: reported, never dropped silently.
             page = root.tables[0].source_ref.page or root.heading.source_ref.page
@@ -389,61 +466,77 @@ class _Builder:
             if section is not root and before_requirements and section.tables:
                 self._leave_out(section)
                 continue
-            if section is not root:
-                description = assemble_description(description, section.title)
-                self.context.append(section.title)
-            for block in section.body:
-                description = assemble_description(description, block.text)
+            if confirmed and section.heading.id not in confirmed:
+                if section.body:
+                    self._leave_out(section)
+                continue
+            self.context.append(section.title)
+            self.context_text.extend(block.text for block in section.body)
             if not before_requirements:
-                for html in self._tables_html(section.tables):
-                    description = assemble_description(description, html)
-        ref = self._ref([root.heading], [root.title])
-        self._node(f"g_{root.heading.id}", WorkItemType.FEATURE, epic.local_id, root.title, description, ref)
+                self.context_text.extend(self._tables_html(section.tables))
 
-    def _section(self, section: _Section, parent: WorkItemNode, path: list[str]) -> None:
+    def _section(self, section: _Section, parent: WorkItemNode | None, path: list[str]) -> list[WorkItemNode]:
+        """The items `section` gives directly under `parent` (none, one, or its children's when the user accepted removing its level)."""
         path = [*path, section.title]
         if section.heading.id in self.g.context_heading_ids and not self._holds_units(section):
             # Confirmed by the pre-study as describing the document: kept in its parent's description, never an item.
-            for part in [s for s in section.subtree()]:
-                text = "\n".join([part.title, *(b.text for b in part.body)])
-                parent.description = assemble_description(parent.description, text)
-            parent.fidelity_hash = self.hash_description(parent.description)
-            parent.identity_hash = self.hash_identity(parent.description, parent.source_ref)
+            texts = [b.text for part in section.subtree() for b in part.body]
+            if parent is None:
+                self.context_text.extend(texts)
+            else:
+                self._describe(parent, texts)
             self.context.append(section.title)
-            return
+            return []
+        parent_id = parent.local_id if parent is not None else None
         if _is_marker(section):
             if self.g.empty_treatment == "leave_out":
                 self._leave_out(section)
-                return
+                return []
             self.empty.append(section.title)
             marker = " ".join(section.body[0].text.split())
-            self._node(f"g_{section.heading.id}", WorkItemType.FEATURE, parent.local_id, section.title,
-                       f"{section.title}\n{marker}", self._ref([section.heading, *section.body], path))  # fmt: skip
-            return
+            node = self._node(f"g_{section.heading.id}", WorkItemType.FEATURE, parent_id, self._title(section), marker,
+                              self._ref([section.heading, *section.body], path))  # fmt: skip
+            node.source_title = section.title
+            return [node]
         intro, units = self._units(section)
-        description = section.title
-        for block in intro:
-            description = assemble_description(description, block.text)
+        own = [b.text for b in intro]
         tables = self._tables_html(section.tables)
         if not units:
-            for html in tables:
-                description = assemble_description(description, html)
-        if self.g.leaf_convention == "heading_is_requirement" and not section.children and len(units) == 1:
+            own += tables
+        description = "\n".join(own)
+        accepted = dict(self.g.accepted).get(section.heading.id)
+        if accepted is not None and getattr(accepted, "action", None) == "drop_wrapper" and not units and not own:
+            # The user accepted removing this level: its sections move up to its parent.
+            return [n for child in section.children for n in self._section(child, parent, path)]
+        if self.g.leaf_convention == "heading_is_requirement" and not section.children and len(units) == 1 and parent is not None:
             unit = units[0]
             text = assemble_description(unit.text(), "\n".join(tables)) if tables else unit.text()
-            self._node(f"g_{section.heading.id}", WorkItemType.REQUIREMENT, parent.local_id, section.title, text,
-                       self._ref([section.heading, *unit.blocks], path), unit.code)  # fmt: skip
-            return
-        feature = self._node(f"g_{section.heading.id}", WorkItemType.FEATURE, parent.local_id, section.title, description,
-                             self._ref([section.heading, *intro], path))  # fmt: skip
+            node = self._node(f"g_{section.heading.id}", WorkItemType.REQUIREMENT, parent_id, self._title(section), text,
+                              self._ref([section.heading, *unit.blocks], path), unit.code)  # fmt: skip
+            node.source_title = section.title
+            node.derived_marks = derived_marks(unit.statement())
+            return [node]
+        if units or (parent is not None and parent.type != WorkItemType.EPIC):
+            item_type = WorkItemType.FEATURE
+        else:
+            item_type = WorkItemType.EPIC
+        node = self._node(f"g_{section.heading.id}", item_type, parent_id, self._title(section), description,
+                          self._ref([section.heading, *intro], path))  # fmt: skip
+        node.source_title = section.title
+        by_code: dict[str, WorkItemNode] = {}
         for k, unit in enumerate(units, start=1):
             text = unit.text()
             if tables and k == len(units):
                 text = assemble_description(text, "\n".join(tables))
-            self._node(f"g_{unit.blocks[0].id}", WorkItemType.REQUIREMENT, feature.local_id, extract_baseline_title(unit.title_text),
-                       text, self._ref(unit.blocks, path), unit.code)  # fmt: skip
+            owner = by_code.get(unit.parent_code or "", node)
+            requirement = self._node(f"g_{unit.blocks[0].id}", WorkItemType.REQUIREMENT, owner.local_id,
+                                     extract_baseline_title(unit.title_text), text, self._ref(unit.blocks, path), unit.code)  # fmt: skip
+            requirement.derived_marks = derived_marks(unit.statement())
+            if unit.code:
+                by_code[unit.code] = requirement
         for child in section.children:
-            self._section(child, feature, path)
+            self._section(child, node, path)
+        return [node]
 
 
 def build_grammar_tree(doc: CanonicalDoc, grammar: DocumentGrammar, doc_title: str, hash_description, hash_identity) -> GrammarResult:  # noqa: ANN001
@@ -452,13 +545,9 @@ def build_grammar_tree(doc: CanonicalDoc, grammar: DocumentGrammar, doc_title: s
     preamble, roots = _sections(doc, unowned)
     builder = _Builder(doc, grammar, doc_title, hash_description, hash_identity)
     builder.build(preamble, roots)
-    if unowned and builder.nodes:
-        # A table before the first section is kept in the Epic's description: no table is ever dropped.
-        epic = builder.nodes[0]
-        for html in builder._tables_html(unowned):
-            epic.description = assemble_description(epic.description, html)
-        epic.fidelity_hash = hash_description(epic.description)
-        epic.identity_hash = hash_identity(epic.description, epic.source_ref)
+    if unowned and builder.top is not None:
+        # A table before the first section is kept in the top Epic's description: no table is ever dropped.
+        builder._describe(builder.top, builder._tables_html(unowned))
     warnings: list[IntegrityWarning] = []
     if builder.context:
         names = "; ".join(f'"{t}"' for t in builder.context[:10]) + (" ..." if len(builder.context) > 10 else "")
@@ -526,3 +615,62 @@ def _last_page(section: _Section) -> int | None:
         if (ref.page_end or ref.page) is not None
     ]
     return max(pages) if pages else None
+
+
+# A list item printed with a bullet glyph, or one Word numbers itself (the loader marks it a list item): written "- item" in a description,
+# the same in every format.
+_BULLET = re.compile(r"^\s*[\u2022\u25aa\u25e6\u2023\u2219\u00b7\u2013\u2014*-]\s+")
+
+
+def _list_item(block: Block) -> str:
+    """The block's text with each bulleted line written "- item" (a reader may join a list's lines into one block, one item per line)."""
+    lines = [line.strip() for line in block.text.strip().split("\n")]
+    if block.kind == BlockKind.LIST_ITEM and not _BULLET.match(lines[0]):
+        lines[0] = f"- {lines[0]}"
+    return "\n".join("- " + _BULLET.sub("", line, count=1) if _BULLET.match(line) else line for line in lines)
+
+
+_ACRONYM = re.compile(r"\b[A-Z][A-Z0-9]{1,5}\b")
+_TRAILING_CODE = re.compile(r"\s*\(([A-Z0-9]+_[A-Z0-9_]+|[A-Z]{2,}[0-9_]*)\)\s*$")
+
+
+def document_acronyms(doc: CanonicalDoc) -> frozenset[str]:
+    """The words the document itself prints in capitals in its running text (HDMI, USB, EMC): kept in capitals when an all-capitals heading
+    is set in sentence case."""
+    return frozenset(m for b in doc.blocks if b.kind != BlockKind.HEADING for m in _ACRONYM.findall(b.text))
+
+
+def clean_heading(text: str, acronyms: frozenset[str] = frozenset()) -> str:
+    """A heading as a title: without a code in parentheses at its end ("SOFTWARE (SW_DESIGN)"), and, when it is all capitals, in
+    sentence case with the document's acronyms (and capital words without a vowel, such as "TV") kept. Text in mixed case is the
+    author's own and is kept as written."""
+    text = _TRAILING_CODE.sub("", " ".join(text.split())).strip()
+    if not text or not text.isupper():
+        return text
+
+    def keep(word: str) -> bool:
+        core = word.strip("()[],.:;")
+        return core in acronyms or (core.isalpha() and core.isupper() and not re.search(r"[AEIOUY]", core))
+
+    words = [w if keep(w) else w.lower() for w in text.split()]
+    if not keep(text.split()[0]):
+        words[0] = words[0][:1].upper() + words[0][1:]
+    return " ".join(words)
+
+
+# The marks a reviewer filters by (never written to Azure DevOps): an open value, a weaker obligation, and no obligation at all.
+_SHALL_MUST = re.compile(r"\b(shall|must)\b", re.IGNORECASE)
+
+
+def derived_marks(statement: str) -> list[str]:
+    """TBD, Should, Will and No obligation, read from the requirement's own text (its trace is not part of it)."""
+    marks = []
+    if "TBD" in statement:
+        marks.append("TBD")
+    if re.search(r"\bshould\b", statement, re.IGNORECASE):
+        marks.append("Should")
+    if re.search(r"\bwill\b", statement, re.IGNORECASE):
+        marks.append("Will")
+    if not (_SHALL_MUST.search(statement) or re.search(r"\b(should|will)\b", statement, re.IGNORECASE)):
+        marks.append("No obligation")
+    return marks

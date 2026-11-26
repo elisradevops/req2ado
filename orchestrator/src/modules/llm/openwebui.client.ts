@@ -1,3 +1,4 @@
+import { Agent } from 'undici';
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
@@ -287,7 +288,13 @@ export class OpenWebUiClient implements LlmClient {
     this.modelConstraints.set(model, current);
   }
 
+  // The long model calls that use fetch directly (the file calls). A call that does not stream sends no headers until its answer is ready, and
+  // Node's built-in fetch cuts it at its own default (headersTimeout, 300 s) whatever LLM_REQUEST_TIMEOUT_MS says: a local model studying a file
+  // was cut at 301 s. Same approach as IngestionHttpClient's long-running agent.
+  private readonly llmAgent: Agent;
+
   constructor(private readonly config: OpenWebUiClientConfig) {
+    this.llmAgent = new Agent({ headersTimeout: config.LLM_REQUEST_TIMEOUT_MS, bodyTimeout: config.LLM_REQUEST_TIMEOUT_MS });
     this.openai = new OpenAI({
       baseURL: config.LLM_CHAT_BASE_URL ?? config.LLM_BASE_URL,
       apiKey: config.LLM_API_KEY ?? 'unused',
@@ -1536,6 +1543,7 @@ export class OpenWebUiClient implements LlmClient {
       send: async (adaptation, signal) => {
         const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
           method: 'POST',
+          dispatcher: this.llmAgent,
           // `context: 'full'` is an undocumented Open WebUI extension field on the files array entry that
           // instructs the native route to return the file's full stored content instead of routing it into
           // chunked RAG (confirmed against Open WebUI v0.8.12 source; a future upgrade could change it silently).
@@ -1608,6 +1616,7 @@ export class OpenWebUiClient implements LlmClient {
       send: async (adaptation, signal) => {
         const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
           method: 'POST',
+          dispatcher: this.llmAgent,
           signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
           headers: {
             'Content-Type': 'application/json',

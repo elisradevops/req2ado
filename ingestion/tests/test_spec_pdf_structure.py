@@ -56,7 +56,12 @@ def tmp_root(tmp_path_factory) -> str:
 
 
 def _item_texts(tree) -> list[tuple[object, str]]:
-    return [(n, _norm(n.title) + " || " + _norm(n.description)) for n in tree.nodes]
+    """Each item as the document states it: its title, then its Customer ID and its text ("REQ-001: The PDU shall ..."). The description
+    no longer carries the code (it is the Customer ID: owner decision, 2026-11-25)."""
+    return [
+        (n, _norm(n.title) + " || " + _norm(f"{n.customer_id}: {n.description}" if n.customer_id else n.description))
+        for n in tree.nodes
+    ]
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -145,8 +150,12 @@ def test_the_cover_title_names_the_epic(mode: str, tmp_root: str) -> None:
     from build_spec_pdf_fixture import DOC_TITLE
 
     _truth, trees = _built("all_together", tmp_root)
-    epics = [n for n in trees[mode].nodes if n.type.value == "Epic"]
-    assert [e.title for e in epics] == [DOC_TITLE]
+    # The chapters are areas made of sections (Epics under an Epic); the document's context describes the whole document, so the root
+    # is the document's own Epic, named by its cover title (owner decision, 2026-11-25: Epic (system) -> Epic (area) -> Feature).
+    roots = [n for n in trees[mode].nodes if n.parent_local_id is None]
+    assert [(r.type.value, r.title) for r in roots] == [("Epic", DOC_TITLE)]
+    areas = [n.title for n in trees[mode].nodes if n.type.value == "Epic" and n.parent_local_id == roots[0].local_id]
+    assert areas == ["Power Requirements", "Built-In Test"]
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -333,8 +342,10 @@ def test_a_scope_section_is_never_made_a_requirement_and_its_text_is_kept(
     assert not [
         n for n in nodes if n.type.value == "Requirement" and _norm(n.title).endswith("scope")
     ]
-    intro = next(n for n in nodes if _norm(n.title).endswith("introduction"))
-    assert "this specification defines the requirements" in _norm(intro.description)
+    # The introduction describes the document: its text is kept, never as a Requirement -- in the root Epic's description where the
+    # document's grammar builds the tree (owner decision, 2026-11-25), in an "Introduction" item where it does not (no requirement codes).
+    holders = [n for n in nodes if "this specification defines the requirements" in _norm(n.description)]
+    assert holders and all(n.type.value != "Requirement" for n in holders)
     assert [w for w in trees[mode].warnings if w.kind.value == "informational_section_folded"]
 
 
@@ -357,8 +368,9 @@ def test_every_coded_requirement_carries_its_customer_id_and_its_title_does_not_
     requirements = [n for n in trees[mode].nodes if n.type.value == "Requirement"]
     assert sorted(n.customer_id for n in requirements) == [f"REQ-00{i}" for i in range(1, 8)]
     assert not [n.title for n in requirements if n.title.startswith("REQ-")]
-    # The description keeps the document's words, the ID included.
-    assert all(n.description.startswith(n.customer_id) for n in requirements)
+    # The description keeps the document's words without the code, which is the Customer ID (owner decision, 2026-11-25).
+    assert not [n.customer_id for n in requirements if n.customer_id in n.description]
+    assert all(n.description.startswith("The PDU shall") for n in requirements)
 
 
 def test_the_counts_tool_reports_numbers_only_never_the_documents_text(tmp_root: str) -> None:
@@ -373,7 +385,7 @@ def test_the_counts_tool_reports_numbers_only_never_the_documents_text(tmp_root:
     spec.loader.exec_module(module)
     path, truth = build_spec_pdf(Path(tmp_root), "all_together")
     counts = module.counts_for(path)
-    assert counts["items"] == {"Epic": 1, "Feature": 6, "Requirement": 7}
+    assert counts["items"] == {"Epic": 3, "Feature": 3, "Requirement": 7}
     assert counts["requirements_with_id"] == 7 and counts["requirements_with_several_ids"] == 0
     assert counts["contents_like_items"] == 0 and counts["numbered_sections_without_item"] == 0
     dumped = json.dumps(counts).casefold()

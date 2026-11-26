@@ -112,7 +112,7 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
   },
   running: {
     label: 'Running',
-    description: 'Parsing and (in SURVEY mode) analyzing the document. BASELINE typically takes about a minute; SURVEY scales with document size.',
+    description: 'Parsing and (With AI review) analyzing the document. Standard typically takes about a minute; With AI review scales with document size.',
   },
   diff_ready: {
     // DESIGN.md §12: sentence case everywhere -- same fix as
@@ -145,7 +145,7 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
   // doesn't have a real Job yet (or never will).
   queued: {
     label: 'Queued',
-    description: 'Waiting for a slot to be submitted as a real job — BASELINE files are submitted immediately; SURVEY files may wait if this deployment is at its concurrency limit.',
+    description: 'Waiting for a slot to be submitted as a real job — Standard files are submitted immediately; With AI review files may wait if this deployment is at its concurrency limit.',
   },
   invalid: {
     label: 'Invalid',

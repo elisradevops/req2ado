@@ -40,8 +40,6 @@ function renderCard(over: Partial<React.ComponentProps<typeof FileReadingCard>> 
       rules={ready(none())}
       study={studyDone}
       onRelearn={vi.fn()}
-      onStopWaiting={vi.fn()}
-      onReadNow={vi.fn()}
       onSaveEdit={vi.fn().mockResolvedValue(null)}
       {...over}
     />,
@@ -73,7 +71,7 @@ describe('FileReadingCard', () => {
     expect(screen.getByRole('button', { name: /read again/i })).toBeInTheDocument();
   });
 
-  it('has one status line and one timer while it reads, and no button of its own (Stop waiting is beside Start)', () => {
+  it('has one status line and one timer while it reads, and no button of its own', () => {
     renderCard({ rules: { status: 'loading', view: null, error: null, startedAt: new Date().toISOString() } });
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status')).toHaveTextContent("Reading the file's layout · step 1 of 2");

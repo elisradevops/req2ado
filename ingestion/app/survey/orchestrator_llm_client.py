@@ -47,7 +47,7 @@ from app.leveling.score_levels import (
 )
 from app.logging_context import current_job_id
 from app.otel import get_tracer
-from app.prompts import resolve_version
+from app.prompts import load_prompt, resolve_version
 from app.prompts.assembly import DataBlock, Fragment, PromptCall, PromptIdentity, build_call
 from app.request_identity import user_scope
 from app.survey._response_schemas import (
@@ -91,6 +91,7 @@ from app.survey.keyed_specs import (
     PAIR_VERDICTS,
     PARAMETER_PAIR_SPEC,
     PARENT_SUMMARY_SPEC,
+    REQUIREMENT_TITLES_SPEC,
     SCORING_POSITIONAL_SPEC,
     SCORING_SPEC,
     SYNTHESIS_SPEC,
@@ -1598,6 +1599,63 @@ class OrchestratorLlmClient:
         return self._run_keyed_by_script(
             send, texts_by_row_id, spec, lambda row_id: _text_of(texts_by_row_id[row_id]), ("title",)
         )
+
+    def requirement_titles(
+        self,
+        texts_by_id: dict[str, str],
+        user_id: str | None = None,
+    ) -> dict[str, dict]:
+        """Backs RequirementTitleClient (app.leveling.requirement_titles): requirement id -> {'title': str}, a short title per requirement a
+        document's grammar built. The caller checks every title against its requirement's text and keeps the extracted title when it is not
+        grounded, so a wrong answer costs nothing but the call.
+
+        Each requirement's answer is cached on its own, by its text, the model, the prompt and the pass version (and the user: an answer is
+        never shared across users), so a re-run of the same file -- or of a file with one requirement edited -- asks only for what it has not
+        seen. Only a complete answer for an id is stored."""
+        from app.leveling.requirement_titles import TITLE_PASS_VERSION
+
+        spec = REQUIREMENT_TITLES_SPEC
+        prompt = load_prompt("requirement_titles")
+
+        def key(text: str) -> str:
+            return payload_key({"pass": spec.name, "version": TITLE_PASS_VERSION, "prompt": prompt, "model": self._model, "text": text}, user_id)
+
+        cached: dict[str, dict] = {}
+        if self._cache is not None and user_id:
+            for row_id, text in texts_by_id.items():
+                hit = self._cache.get(key(text))
+                if isinstance(hit, dict) and isinstance(hit.get("title"), str):
+                    cached[row_id] = hit
+        missing = {row_id: text for row_id, text in texts_by_id.items() if row_id not in cached}
+        if not missing:
+            return cached
+
+        def send(payload: dict, mode: KeyedMode, script: str | None) -> object:
+            after, language_blocks = self._language(script=script)
+            call = build_call(
+                "requirement_titles",
+                markers={"row_count": str(len(payload)), "output_format": describe_output(spec, mode)},
+                blocks=[
+                    *self._standard_blocks(),
+                    *language_blocks,
+                    DataBlock("source", json.dumps(payload, ensure_ascii=False)),
+                ],
+                after=after,
+            )
+            return self._chat_json(
+                call,
+                self._params(schema=schema_for(spec, mode)),
+                user_id=user_id,
+                stream_inputs=dict(payload),
+                stream_stage="improve",
+            )
+
+        answered = dict(self._run_keyed_by_script(send, missing, spec, lambda row_id: _text_of(missing[row_id]), ("title",)))
+        if self._cache is not None and user_id:
+            for row_id, entry in answered.items():
+                if isinstance(entry, dict) and isinstance(entry.get("title"), str) and row_id in missing:
+                    self._cache.set(key(missing[row_id]), {"title": entry["title"]})
+        return {**cached, **answered}
 
     def summarize_parent_nodes(
         self,

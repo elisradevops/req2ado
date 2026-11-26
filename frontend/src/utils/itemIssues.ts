@@ -29,7 +29,7 @@ export interface IssueEntry {
   proposal?: { kind: string; html: string } | null;
   duplicateOf?: { existingAdoId?: number | null } | null;
   // The assistant's suggestion kept with the item: one nobody decided on is an issue until it is accepted, rejected or parked.
-  suggestion?: { decision: string } | null;
+  suggestion?: { decision: string; origin?: string } | null;
 }
 
 const MAX_NAME_CHARS = 48;
@@ -51,7 +51,9 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
   }
 
   if (entry.suggestion?.decision === 'pending') {
-    issues.push({ id: 'suggestion-waiting', severity: 'review', text: 'The assistant suggested a rewrite. Review it before moving on.', reviewable: true });
+    // Who suggested it: With AI review while the job ran, or the item's assistant on request.
+    const who = entry.suggestion.origin === 'ai_review' ? 'With AI review suggested a rewrite' : 'The assistant suggested a rewrite';
+    issues.push({ id: 'suggestion-waiting', severity: 'review', text: `${who}. Review it before moving on.`, reviewable: true });
   }
 
   // Only Requirements are scored and checked against the source; an Epic or Feature never carries a score line or a "Check:" line.

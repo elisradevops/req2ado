@@ -93,6 +93,25 @@ class FrontMatterPart:
     role: str
 
 
+# The document profile (prompt study_file_rules_document v4): what kind of document it is, and how its own title policy reads.
+DOCUMENT_KINDS = ("requirements_export", "requirements_spec", "prose_spec", "other")
+TITLE_POLICIES = ("extract", "write")
+# A wrapper proposal: remove the level (its children move up) or rename it. Never applied until the user accepts it (owner decision).
+PROPOSAL_ACTIONS = ("drop_wrapper", "rename")
+PROPOSAL_DECISIONS = ("accept", "keep")
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """A proposed change to the file's structure for one heading: `drop_wrapper` (its children move up a level) or `rename` (to
+    `new_title`, grounded in its sub-headings or the cover). `reason` is shown to the user and is not part of the rulebook's meaning."""
+
+    block_id: str
+    action: str
+    new_title: str | None
+    reason: str
+
+
 @dataclass(frozen=True)
 class DocumentRules:
     labels: tuple[LabelRule, ...] = ()
@@ -109,6 +128,19 @@ class DocumentRules:
     empty_treatment: str | None = None  # "empty_feature" | "leave_out"
     context_headings: tuple[str, ...] = ()  # heading block ids
     back_matter_headings: tuple[str, ...] = ()  # heading block ids
+    # The document profile the pre-study confirmed and code checked (study/model_rules.validate_profile): the document's kind, its cover
+    # title (cover lines the model picked, joined by code), wrapper proposals, heading spelling fixes (block id, fixed text: applied
+    # automatically, so they are small) and whether requirement titles are extracted or written.
+    document_kind: str | None = None
+    cover_title: str | None = None
+    proposals: tuple[Proposal, ...] = ()
+    spelling_fixes: tuple[tuple[str, str], ...] = ()
+    title_policy: str | None = None
+    # The user's decision on each proposal (block id, "accept" | "keep"), made in the wizard; a proposal with none keeps the file's original.
+    proposal_decisions: tuple[tuple[str, str], ...] = ()
+
+    def has_profile(self) -> bool:
+        return bool(self.document_kind or self.cover_title or self.proposals or self.spelling_fixes or self.title_policy)
 
     def has_grammar(self) -> bool:
         return bool(
@@ -134,6 +166,16 @@ class DocumentRules:
                 "context_headings": sorted(self.context_headings),
                 "back_matter_headings": sorted(self.back_matter_headings),
             }
+        if self.has_profile():  # the same again: a rulebook stored before the profile existed keeps its hash
+            canonical["profile"] = {
+                "document_kind": self.document_kind,
+                "cover_title": fold(self.cover_title) if self.cover_title else None,
+                "proposals": sorted((p.block_id, p.action, fold(p.new_title or "")) for p in self.proposals),
+                "spelling_fixes": sorted(self.spelling_fixes),
+                "title_policy": self.title_policy,
+            }
+        if self.proposal_decisions:
+            canonical["decisions"] = sorted(self.proposal_decisions)
         return canonical
 
 
@@ -158,7 +200,13 @@ class FileRulebook:
     def is_empty(self) -> bool:
         return not self.tables and (
             self.document is None
-            or not (self.document.labels or self.document.depth_types or self.document.front_matter or self.document.has_grammar())
+            or not (
+                self.document.labels
+                or self.document.depth_types
+                or self.document.front_matter
+                or self.document.has_grammar()
+                or self.document.has_profile()
+            )
         )
 
 
@@ -270,6 +318,22 @@ def rulebook_to_json(rulebook: FileRulebook) -> dict:
                 if document.has_grammar()
                 else {}
             ),
+            **(
+                {
+                    "profile": {
+                        "document_kind": document.document_kind,
+                        "cover_title": document.cover_title,
+                        "proposals": [
+                            {"block_id": p.block_id, "action": p.action, "new_title": p.new_title, "reason": p.reason} for p in document.proposals
+                        ],
+                        "spelling_fixes": [[block_id, fixed] for block_id, fixed in document.spelling_fixes],
+                        "title_policy": document.title_policy,
+                    }
+                }
+                if document.has_profile()
+                else {}
+            ),
+            **({"decisions": [[block_id, d] for block_id, d in document.proposal_decisions]} if document.proposal_decisions else {}),
         },
     }
 
@@ -319,7 +383,9 @@ def rulebook_from_json(raw: object, origin: str | None = None) -> FileRulebook:
                 raise ValueError("a front-matter part must be a block id and one of " + ", ".join(FRONT_MATTER_ROLES))
             front.append(FrontMatterPart(item["block_id"], item["role"]))
         grammar = _grammar_from_json(document_raw.get("grammar"))
-        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"), front_matter=tuple(front), **grammar)  # type: ignore[arg-type]
+        profile = _profile_from_json(document_raw.get("profile"))
+        decisions = _decisions_from_json(document_raw.get("decisions"), {p.block_id for p in profile.get("proposals", ())})
+        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"), front_matter=tuple(front), **grammar, **profile, proposal_decisions=decisions)  # type: ignore[arg-type]
     return FileRulebook(tables=tables, document=document)
 
 
@@ -352,3 +418,92 @@ def _grammar_from_json(raw: object) -> dict:
         "context_headings": strings("context_headings", 60, 64),
         "back_matter_headings": strings("back_matter_headings", 20, 64),
     }
+
+
+def _short_string(value: object, name: str, length: int, *, allow_none: bool = False) -> str | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str) or len(value) > length:
+        raise ValueError(f"{name} must be a string of at most {length} characters")
+    return value
+
+
+def _profile_from_json(raw: object) -> dict:
+    """The profile fields of DocumentRules from their JSON form ({} when absent), or ValueError naming what is wrong."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("the profile must be an object")
+    kind, policy = raw.get("document_kind"), raw.get("title_policy")
+    if kind is not None and kind not in DOCUMENT_KINDS:
+        raise ValueError("document_kind must be one of " + ", ".join(DOCUMENT_KINDS))
+    if policy is not None and policy not in TITLE_POLICIES:
+        raise ValueError("title_policy must be one of " + ", ".join(TITLE_POLICIES))
+    proposals_raw, fixes_raw = raw.get("proposals", []), raw.get("spelling_fixes", [])
+    if (
+        not isinstance(proposals_raw, list)
+        or len(proposals_raw) > 20
+        or not isinstance(fixes_raw, list)
+        or len(fixes_raw) > 40
+    ):
+        raise ValueError("proposals and spelling_fixes must be short lists")
+    proposals = []
+    for item in proposals_raw:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("block_id"), str)
+            or not item["block_id"]
+            or item.get("action") not in PROPOSAL_ACTIONS
+        ):
+            raise ValueError(
+                "a proposal must be a block id and one of " + ", ".join(PROPOSAL_ACTIONS)
+            )
+        new_title = _short_string(
+            item.get("new_title"), "a proposal's new title", 120, allow_none=True
+        )
+        if (item["action"] == "rename") != bool(new_title and new_title.strip()):
+            raise ValueError("a rename needs a new title, and only a rename has one")
+        proposals.append(
+            Proposal(
+                item["block_id"][:64],
+                item["action"],
+                new_title.strip() if new_title else None,
+                _short_string(item.get("reason", ""), "a proposal's reason", 300) or "",
+            )
+        )
+    fixes = []
+    for item in fixes_raw:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) != 2
+            or not all(isinstance(v, str) and 0 < len(v) <= 200 for v in item)
+        ):
+            raise ValueError("a spelling fix must be a [block id, fixed text] pair")
+        fixes.append((item[0], item[1]))
+    return {
+        "document_kind": kind,
+        "cover_title": _short_string(raw.get("cover_title"), "cover_title", 200, allow_none=True),
+        "proposals": tuple(proposals),
+        "spelling_fixes": tuple(fixes),
+        "title_policy": policy,
+    }
+
+
+def _decisions_from_json(raw: object, proposal_ids: set[str]) -> tuple[tuple[str, str], ...]:
+    """The user's decisions on the proposals, each naming a proposal of this rulebook and "accept" or "keep"."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or len(raw) > 20:
+        raise ValueError("decisions must be a short list")
+    out = []
+    for item in raw:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) != 2
+            or item[1] not in PROPOSAL_DECISIONS
+        ):
+            raise ValueError("a decision must be a [block id, accept | keep] pair")
+        if item[0] not in proposal_ids:
+            raise ValueError(f"a decision names a proposal ({item[0]}) the rulebook does not have")
+        out.append((item[0], item[1]))
+    return tuple(sorted(dict(out).items()))

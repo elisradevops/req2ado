@@ -42,3 +42,23 @@ def pytest_approx(value: float):
     import pytest
 
     return pytest.approx(value, abs=1e-6)
+
+
+def test_an_item_without_a_description_is_embedded_by_its_title_alone() -> None:
+    """An Epic or Feature with no text of its own in the file has an empty description (owner decision, 2026-11-25). The orchestrator's
+    /llm/embed refuses an empty text, so every duplicate check of such an item failed (seen live, 2026-11-26). Empty descriptions are not
+    sent, and such an item's vector is its title's."""
+    from app.dedup.embedding_blend import blend_embeddings, embed_titles_and_texts
+
+    sent: list[list[str]] = []
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        sent.append(list(texts))
+        table = {"Power": [1.0, 0.0], "Tuner": [0.0, 1.0], "Receives DVB-T2.": [0.6, 0.8]}
+        return [table[t] for t in texts]
+
+    vectors = embed_titles_and_texts(embed, [("Power", ""), ("Tuner", "Receives DVB-T2."), ("Power", "   ")])
+    assert sent == [["Power", "Tuner", "Power", "Receives DVB-T2."]]  # titles, then only the non-empty texts
+    assert vectors[0] == blend_embeddings([1.0, 0.0], [1.0, 0.0])
+    assert vectors[1] == blend_embeddings([0.0, 1.0], [0.6, 0.8])
+    assert vectors[2] == vectors[0]

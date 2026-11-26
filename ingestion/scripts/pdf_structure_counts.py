@@ -82,9 +82,15 @@ def counts_for(path: Path) -> dict:
     ]
     item_titles = [" ".join(n.title.split()).casefold() for n in nodes]
     descriptions = [" ".join(n.description.split()).casefold() for n in nodes]
+    # A section is accounted for when an item was built from its heading (its clean title, renamed or spelling-fixed, no longer
+    # repeats the heading), or when it was kept as context in its parent (its text, without its heading, is that item's description).
+    built_from = {" ".join((n.source_title or "").split()).casefold() for n in nodes}
+    kept_sections = {" ".join(t.split()).casefold() for t in (kept.detail.get("sections", []) if kept else [])}
     without_item = 0
     for heading in numbered:
         text = " ".join(heading.text.split()).casefold()
+        if text in built_from or text in kept_sections:
+            continue
         if not any(
             title.endswith(text) or text.endswith(title) for title in item_titles if title
         ) and not any(text in d for d in descriptions):

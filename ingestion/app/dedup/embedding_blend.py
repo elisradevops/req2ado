@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 
 
 def blend_embeddings(vec_a: list[float], vec_b: list[float], weight_a: float = 0.5) -> list[float]:
@@ -22,3 +23,20 @@ def blend_embeddings(vec_a: list[float], vec_b: list[float], weight_a: float = 0
     if norm == 0:
         return blended
     return [x / norm for x in blended]
+
+
+def embed_titles_and_texts(
+    embed: Callable[[list[str]], list[list[float]]], items: Sequence[tuple[str, str]]
+) -> list[list[float]]:
+    """One duplicate-check vector per (title, text): the blend of the two embeddings, in one embed call (titles first, then texts).
+
+    An item with no text (an Epic or Feature the file gives no text of its own, owner decision 2026-11-25) is the blend of its title with
+    itself, which is the title's direction at unit length: its empty text is never sent, because /llm/embed refuses an empty string and the
+    whole check then failed (seen live, 2026-11-26)."""
+    texts = [text for _, text in items if text.strip()]
+    vectors = embed([title for title, _ in items] + texts)
+    title_vectors, text_vectors = vectors[: len(items)], iter(vectors[len(items) :])
+    return [
+        blend_embeddings(title_vector, next(text_vectors) if text.strip() else title_vector)
+        for title_vector, (_, text) in zip(title_vectors, items)
+    ]

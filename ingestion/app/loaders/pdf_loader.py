@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import logging
+import math
 import re
 from collections.abc import Callable
 from functools import lru_cache
@@ -1195,6 +1196,7 @@ def _lines_to_paragraphs(lines: list[dict], code_shape: CodeShape | None = None)
     prev_bottom = lines[0]["bottom"]
     prev_size = current_size
     previous_line = lines[0]
+    current_lefts = [lines[0].get("x0", 0.0)]
     for line in lines[1:]:
         size = _line_size(line)
         gap = line["top"] - prev_bottom
@@ -1210,11 +1212,22 @@ def _lines_to_paragraphs(lines: list[dict], code_shape: CodeShape | None = None)
         ended_short = bool(_SENTENCE_END_PATTERN.search(prev_line["text"])) and (
             right_edge - prev_line.get("x1", right_edge) > _PARAGRAPH_SHORT_LINE_EMS * prev_size
         )
-        if same_size and small_gap and not starts_requirement and not ended_short:
+        # The line starts well left of a paragraph whose lines all share one indent: a new block set at the page margin (a full-width
+        # Note after a requirement's indented trace), not a continuation. One line before it is not enough: a paragraph whose first line
+        # is indented continues at the margin.
+        left = line.get("x0", 0.0)
+        outdented = (
+            len(current_lefts) >= 2
+            and max(current_lefts) - min(current_lefts) <= 1.0
+            and left < min(current_lefts) - _PARAGRAPH_OUTDENT_EMS * max(size, prev_size)
+        )
+        if same_size and small_gap and not starts_requirement and not ended_short and not outdented:
             current_texts.append(line["text"])
+            current_lefts.append(left)
         else:
             paragraphs.append((_join_lines(current_texts), current_top, current_size, current_bold))
             current_texts = [line["text"]]
+            current_lefts = [left]
             current_top = line["top"]
             current_size = size
             current_bold = _line_is_bold(line)
@@ -1243,6 +1256,8 @@ def _body_right_edge(lines: list[dict]) -> float:
 # How far short of the right edge (in ems of the line's font size) a sentence-ending line must stop to be read as a paragraph's
 # last line. A justified or ragged-right body line stops within about one or two characters of the edge; 4 ems is clear of both.
 _PARAGRAPH_SHORT_LINE_EMS = 4.0
+# How far left of an indented paragraph (in ems) a line must start to open a new block at the margin.
+_PARAGRAPH_OUTDENT_EMS = 2.0
 _LINE_END_HYPHEN_PATTERN = re.compile(r"[^\W\d_]-$")
 
 
@@ -1598,6 +1613,27 @@ def _without_rotated_text(page):
     return page.filter(lambda obj: obj.get("object_type") != "char" or obj.get("upright", True))
 
 
+# How far from a quarter turn a character may be set and still be text. A stamp or a watermark is set at a slant (a rubber stamp at
+# 10-20 degrees, a diagonal "DRAFT" at 45); text, including a margin notice or a column heading turned 90 degrees, is set square.
+_MAX_SKEW_DEGREES = 3.0
+
+
+def _is_tilted(obj: dict) -> bool:
+    """A character set at a slant that is not a quarter turn: part of a stamp or a watermark, never of the text. pdfplumber's `upright`
+    does not tell (a 14-degree stamp reads as upright), so the angle is taken from the character's text matrix."""
+    if obj.get("object_type") != "char" or not obj.get("matrix"):
+        return False
+    a, b = obj["matrix"][0], obj["matrix"][1]
+    angle = math.degrees(math.atan2(b, a)) % 90
+    return min(angle, 90 - angle) > _MAX_SKEW_DEGREES
+
+
+def _without_tilted_text(page):
+    """The page without its stamps and watermarks: printed over the text (a confidentiality stamp beside the cover title), their letters
+    were read in between the title's and garbled both."""
+    return page.filter(lambda obj: not _is_tilted(obj))
+
+
 def _detect_boilerplate_images(
     all_pages_images: list[list[tuple[dict, object]]],
 ) -> set[str]:
@@ -1799,6 +1835,7 @@ def load_pdf(
         # recurs ACROSS pages -- no single page's content can prove that).
         rotated_furniture = _recurring_rotated_text_pages(pdf.pages)
         pages = [_without_rotated_text(p) if i in rotated_furniture else p for i, p in enumerate(pdf.pages)]
+        pages = [_without_tilted_text(p) for p in pages]
         all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pages]
         positional_furniture = _detect_positional_furniture(
             [(lines, page.height) for page, lines in zip(pages, all_pages_lines)]
@@ -1858,6 +1895,7 @@ def load_pdf(
         size_ranks: dict[float, int] = {}
         body_size = _dominant_body_size(all_pages_lines)
         outline_positions = _outline_heading_positions(path)
+        matched_outline: set[tuple[int, str]] = set()
 
         for page_number, page in enumerate(pages, start=1):
             # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
@@ -2256,7 +2294,14 @@ def load_pdf(
                     start = offset
                     end = start + len(text)
                     offset = end + 1
-                    outline_depth = outline_positions.get((page_number, text.strip()))
+                    # An outline entry points at its heading's page, or at the foot of the page before it when the heading opens the next
+                    # page (the bookmark is set before the page break). Each entry is matched once, so repeated text is not a heading twice.
+                    outline_depth = None
+                    for key in ((page_number, text.strip()), (page_number - 1, text.strip())):
+                        if key in outline_positions and key not in matched_outline:
+                            outline_depth = outline_positions[key]
+                            matched_outline.add(key)
+                            break
                     heading_level: int | None = None
                     number_label: str | None = None
                     if outline_depth is not None:

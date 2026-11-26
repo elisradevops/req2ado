@@ -456,8 +456,9 @@ def file_rules_table_schema() -> dict:
 
 
 def file_rules_document_schema() -> dict:
-    """study_file_rules_document (study/model_rules.py): how a document states its item types: label conventions copied from its headings and the
-    type of each nesting depth. The caller recounts every label over every heading; the schema only fixes the shape."""
+    """study_file_rules_document (study/model_rules.py): how a document states its item types (label conventions copied from its headings, the
+    type of each nesting depth), its grammar, and its profile (kind, cover title lines, wrapper proposals, heading spelling fixes, title
+    policy). The caller checks every part against the document; the schema only fixes the shape."""
     return {
         "name": "file_rules_document",
         "schema": {
@@ -512,6 +513,32 @@ def file_rules_document_schema() -> dict:
                 "empty_sections": {"type": "string", "enum": ["empty_feature", "leave_out", "unknown"]},
                 "context_headings": {"type": "array", "items": {"type": "integer"}},
                 "back_matter_headings": {"type": "array", "items": {"type": "integer"}},
+                "document_kind": {"type": "string", "enum": ["requirements_export", "requirements_spec", "prose_spec", "other", "unknown"]},
+                "cover_title_lines": {"type": "array", "items": {"type": "integer"}},
+                "proposals": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "i": {"type": "integer"},
+                            "action": {"type": "string", "enum": ["drop_wrapper", "rename"]},
+                            "new_title": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["i", "action", "new_title", "reason"],
+                        "additionalProperties": False,
+                    },
+                },
+                "spelling_fixes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"i": {"type": "integer"}, "fixed": {"type": "string"}},
+                        "required": ["i", "fixed"],
+                        "additionalProperties": False,
+                    },
+                },
+                "title_policy": {"type": "string", "enum": ["extract", "write", "unknown"]},
             },
             "required": [
                 "type_source",
@@ -524,6 +551,11 @@ def file_rules_document_schema() -> dict:
                 "empty_sections",
                 "context_headings",
                 "back_matter_headings",
+                "document_kind",
+                "cover_title_lines",
+                "proposals",
+                "spelling_fixes",
+                "title_policy",
             ],
             "additionalProperties": False,
         },

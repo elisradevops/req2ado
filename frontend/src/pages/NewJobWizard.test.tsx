@@ -31,6 +31,11 @@ beforeEach(() => {
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
   // By default the job reads no Study (as for a user with no model connection), so Start behaves as it did before the Study step.
   vi.spyOn(jobsApi, 'previewStudy').mockResolvedValue({ kind: 'skipped' });
+  // By default the file study answers with rules but no reading (as for a spreadsheet, or a rulebook stored before readings were kept), so a
+  // test about something else starts from a finished study: a failed study holds Start (owner decision, 2026-11-25).
+  vi.spyOn(jobsApi, 'previewRules').mockResolvedValue({
+    id: 'rb-default', source: 'model', hash: 'h-default', rules: [], warnings: [], rulebook: {}, reused: false, skipped: null, details: null,
+  } as never);
 });
 
 describe('NewJobWizard Step 1', () => {
@@ -62,7 +67,7 @@ describe('NewJobWizard Step 1', () => {
     expect(document.title).toBe('req2ado');
   });
 
-  it('counts three steps for a SURVEY draft', () => {
+  it('counts two steps for a With AI review draft too: one page after the upload in both modes', () => {
     useNewJobDraftStore.getState().patch({ mode: 'survey' });
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     render(
@@ -72,8 +77,8 @@ describe('NewJobWizard Step 1', () => {
         </MemoryRouter>
       </ToastProvider>,
     );
-    expect(document.title).toBe('Step 1 of 3: Upload document - New job');
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 1 of 3');
+    expect(document.title).toBe('Step 1 of 2: Upload document - New job');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 1 of 2');
   });
 
   it('uploads a file and fills in the stat tiles in place, without leaving step 1', async () => {
@@ -249,17 +254,14 @@ describe('NewJobWizard Step 1', () => {
     // to step 2 is now an explicit click.
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
     // exact text: the stepper's "SURVEY only" chip also matches /survey/i
-    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByText('With AI review'));
     // Team Project is a Radix combobox+listbox now -- open then click the
     // option, same reasoning as ProjectPicker.test.tsx. Area path is still
     // a datalist-backed text input, so typing into it is correct.
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
-    // SURVEY mode's step-2 button now advances to step 3 (Confirm
-    // understanding) instead of submitting directly -- the actual
-    // submission trigger lives there now.
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    // One page in both modes (owner decision, 2026-11-25): Start is on step 2.
     await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
 
@@ -474,7 +476,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.upload(input, file);
     await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
   }
 
   it('SURVEY configure step shows the knowledge-base readiness strip; BASELINE does not', async () => {
@@ -484,7 +486,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await uploadAndConfigureAsSurvey();
     expect(await screen.findByText('1 file · 32 chunks')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /Standard/i }));
     expect(screen.queryByText('1 file · 32 chunks')).toBeNull();
   });
 
@@ -594,11 +596,11 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
       await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
       await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-      await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
+      await userEvent.click(screen.getByRole('radio', { name: /^With AI review/ }));
 
       await goAwayAndBack();
 
-      expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+      expect(screen.getByRole('radio', { name: /^With AI review/ })).toBeChecked();
       expect(screen.queryByLabelText(/upload/i)).not.toBeInTheDocument(); // still on the configure step, not back at the dropzone
       expect(previewJob).toHaveBeenCalledTimes(1);
     });
@@ -729,11 +731,11 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(spy).not.toHaveBeenCalled();
     });
 
-    it('cancels the request when the user leaves step 3', async () => {
+    it('cancels the request when the user leaves the page for the upload', async () => {
       let signal: AbortSignal | undefined;
       vi.spyOn(jobsApi, 'previewSummary').mockImplementation((_params, s) => { signal = s; return new Promise(() => {}); });
       await openStep3(withInput);
-      await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+      await userEvent.click(screen.getByRole('button', { name: 'Back' }));
       expect(signal?.aborted).toBe(true);
     });
 
@@ -827,7 +829,6 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     await uploadAndConfigureAsSurvey();
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
   }
 
   it('SURVEY selection advances to step 3 and shows the overview lines at once, with no study of the document', async () => {
@@ -863,7 +864,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.getByRole('button', { name: /looks right/i }).parentElement).toHaveTextContent(/nothing reaches azure devops until you approve the proposed diff/i);
   });
 
-  it('shows two steps in BASELINE and three in SURVEY, with no mode tag; switching mode on step 2 changes the list in place', async () => {
+  it('shows two steps in both modes, with no mode tag; switching mode on step 2 keeps the same page (owner decision, 2026-11-25)', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
     } as any);
@@ -886,13 +887,12 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(states()).toEqual(['done', 'awaiting']);
     expect(screen.queryByText('SURVEY only')).toBeNull();
 
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    expect(states()).toEqual(['done', 'awaiting', 'pending']);
-    expect(stepList()).toHaveTextContent('Configure & review');
-    expect(stepList()).toHaveTextContent('Confirm understanding');
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    expect(states()).toEqual(['done', 'awaiting']);
+    expect(stepList()).toHaveTextContent('Check and start');
     expect(screen.queryByText('SURVEY only')).toBeNull();
 
-    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /Standard/i }));
     expect(states()).toEqual(['done', 'awaiting']);
   });
 
@@ -929,7 +929,6 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     const step2Root = screen.getByTestId('wizard-step');
 
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
 
     const step3Root = screen.getByTestId('wizard-step');
     expect(step3Root).toBe(step2Root);
@@ -938,32 +937,41 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
   it('moves focus to the new step heading, which reads the step, and updates the page title', async () => {
     document.title = 'req2ado';
-    await openStep3();
+    useNewJobDraftStore.getState().patch({ mode: 'survey' });
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(previewWith(OVERVIEW));
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
     const heading = screen.getByRole('heading', { level: 1 });
-    expect(heading).toHaveTextContent('New job, step 3 of 3');
+    expect(heading).toHaveTextContent('New job, step 2 of 2');
     expect(heading).toHaveFocus();
-    expect(document.title).toBe('Step 3 of 3: Confirm understanding - New job');
-
-    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
-    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
-    expect(document.title).toBe('Step 2 of 3: Configure & review - New job');
+    expect(document.title).toBe('Step 2 of 2: Check and start - New job');
   });
 
   it('does not replay the fade when the person goes back to a step they have already seen', async () => {
     await openStep3();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     const root = screen.getByTestId('wizard-step');
     const remove = vi.spyOn(root.classList, 'remove');
 
-    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+    await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
 
-    expect(screen.getByTestId('wizard-step')).toBe(root);
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('"Back to configure" returns to step 2 without losing the area path', async () => {
+  it('"Back" returns to the upload, and coming back keeps the area path', async () => {
     await openStep3();
 
-    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
 
     expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
   });
@@ -1008,13 +1016,13 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(within(rail).queryByRole('button', { name: /start job|reading the file|continue/i })).not.toBeInTheDocument();
     });
 
-    it('puts what was read from the file before the destination, in the page order the keyboard and a screen reader follow', async () => {
+    it('puts what was read from the file first, then the modes, then the destination: the approved order, for the keyboard and a screen reader too', async () => {
       await openCheckAndStart();
-      const rules = screen.getByTestId('file-reading-card');
-      const destination = screen.getByText('Destination in Azure DevOps');
+      const read = screen.queryByTestId('file-study-panel') ?? screen.getByTestId('file-reading-card');
+      const destination = screen.getByRole('heading', { name: 'Where do the items land?' });
       const modes = screen.getByRole('radiogroup', { name: 'Analysis mode' });
-      expect(modes.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(rules.compareDocumentPosition(destination) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(read.compareDocumentPosition(modes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(modes.compareDocumentPosition(destination) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it('the upload step offers "Check and start" in BASELINE, the page it leads to', async () => {
@@ -1042,34 +1050,28 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(screen.queryByText(/to start\./i)).not.toBeInTheDocument();
     });
 
-    it('switching to SURVEY on this page turns it into "Configure & review": Continue, and no overview or reading until step 3', async () => {
+    it('switching to With AI review keeps this one page: what was read, the destination and Start, with no Continue', async () => {
       await openCheckAndStart();
       await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
       const heading = screen.getByRole('heading', { level: 1 });
-      await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+      await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
 
       expect(screen.getByRole('heading', { level: 1 })).toBe(heading);
-      expect(heading).toHaveTextContent('New job, step 2 of 3');
-      expect(document.title).toBe('Step 2 of 3: Configure & review - New job');
-      expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled();
-      expect(screen.queryByRole('button', { name: /looks right|reading the file/i })).not.toBeInTheDocument();
-      expect(screen.queryByText(/this file and how it will be read/i)).not.toBeInTheDocument();
-      expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
-
-      await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 3 of 3');
-      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
+      expect(heading).toHaveTextContent('New job, step 2 of 2');
+      expect(document.title).toBe('Step 2 of 2: Check and start - New job');
+      expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /looks right|reading the/i })).toBeInTheDocument();
+      expect(screen.queryByTestId('file-study-panel') ?? screen.queryByTestId('file-reading-card')).toBeInTheDocument();
     });
 
-    it('a SURVEY user who goes back from step 3 and picks BASELINE lands on "Check and start", and starts from there', async () => {
+    it('a With AI review user who picks Standard stays on "Check and start", and starts from there', async () => {
       vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
       await openStep3();
-      await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
-      await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+      await userEvent.click(screen.getByRole('radio', { name: /Standard/i }));
 
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 2 of 2');
       expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument();
-      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
+      expect(screen.queryByTestId('file-study-panel') ?? screen.queryByTestId('file-reading-card')).toBeInTheDocument();
       await startBaselineJob();
       expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline', areaPath: 'Project\\Area1' }));
     });
@@ -1086,7 +1088,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       );
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 2 of 2');
       expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
-      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
+      expect(screen.queryByTestId('file-study-panel') ?? screen.queryByTestId('file-reading-card')).toBeInTheDocument();
     });
   });
 
@@ -1108,18 +1110,15 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'doc-a.docx'));
     await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
     await waitFor(() => expect(screen.getByText(/About document A/)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     await userEvent.click(screen.getByRole('button', { name: /replace/i }));
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['y'], 'doc-b.docx'));
     await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
 
     await waitFor(() => expect(screen.getByText(/About document B/)).toBeInTheDocument());
     expect(screen.queryByText(/About document A/)).not.toBeInTheDocument();
@@ -1169,32 +1168,33 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
 
   it('does not tell a BASELINE user that its estimate is still learning: BASELINE is a flat figure that never changes', async () => {
     await reachStep2();
-    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /Standard/i }));
     const rail = screen.getByRole('complementary', { name: 'This run' });
-    expect(rail).toHaveTextContent('BASELINE');
+    expect(rail).toHaveTextContent('Standard');
     expect(rail).not.toHaveTextContent(/no completed runs yet/i);
     expect(rail).not.toHaveTextContent(/feeds the fit|sharpens on its own|conservative default/i);
   });
 
   it('says so when no finished SURVEY run is near the document\'s size', async () => {
     await reachStep2(0);
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    expect(screen.getByText(/no finished survey run is near this document's size/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    expect(screen.getByText(/no finished with ai review run is near this document's size/i)).toBeInTheDocument();
   });
 
   it('does not say it when a finished SURVEY run is near the document\'s size', async () => {
     await reachStep2(3);
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    expect(screen.queryByText(/no finished survey run is near this document's size/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    expect(screen.queryByText(/no finished with ai review run is near this document's size/i)).not.toBeInTheDocument();
   });
 
-  it('shows the uploaded document in the summary rail, with its counts', async () => {
+  it('shows the uploaded document once, in the strip under the title with its counts, not again in the rail', async () => {
     await reachStep2();
-    const rail = screen.getByRole('complementary', { name: 'This run' });
-    expect(rail).toHaveTextContent('AirPro_ICD.docx');
-    expect(rail).toHaveTextContent('682 blocks');
-    expect(rail).toHaveTextContent('24 sections');
-    expect(rail).toHaveTextContent('39 figures');
+    const strip = screen.getByTestId('file-strip');
+    expect(strip).toHaveTextContent('AirPro_ICD.docx');
+    expect(strip).toHaveTextContent('682 blocks');
+    expect(strip).toHaveTextContent('24 sections');
+    expect(strip).toHaveTextContent('39 figures');
+    expect(screen.getByRole('complementary', { name: 'This run' })).not.toHaveTextContent('AirPro_ICD.docx');
   });
 
   it('puts the question on the canvas, so the mode cards are the only cards (DESIGN.md §16.15, §11.2.5)', async () => {
@@ -1205,18 +1205,19 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
     expect(modes.closest('.shadow-card')).toBeNull();
   });
 
-  it('lets you change the document from the rail, which goes back to step 1', async () => {
+  it('lets you change the document from the file strip, which goes back to step 1', async () => {
     await reachStep2();
     await userEvent.click(screen.getByRole('button', { name: /change document/i }));
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('New job, step 1 of 2');
   });
 
-  it('keeps the primary action and the safety line together in the rail (SURVEY; BASELINE starts from the sticky bar)', async () => {
+  it('keeps the primary action and the safety line together in the sticky bar, in both modes (one page)', async () => {
     await reachStep2();
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    const rail = screen.getByRole('complementary', { name: 'This run' });
-    expect(rail).toContainElement(screen.getByRole('button', { name: /^continue$/i }));
-    expect(rail).toHaveTextContent('Nothing reaches Azure DevOps until you approve the proposed diff.');
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    const bar = screen.getByRole('button', { name: /looks right|reading the/i }).parentElement as HTMLElement;
+    expect(bar.className).toMatch(/sticky/);
+    expect(bar).toHaveTextContent('Nothing reaches Azure DevOps until you approve the proposed diff.');
+    expect(within(screen.getByRole('complementary', { name: 'This run' })).queryByRole('button', { name: /continue|looks right/i })).toBeNull();
   });
 
   it('folds iteration, state and duplicate scope under a closed "More options" that reads their values back', async () => {
@@ -1232,26 +1233,25 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
 
   it('gives the estimate one home beside the mode cards: no separate cost card and no warning alert for SURVEY', async () => {
     await reachStep2();
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     expect(screen.queryByText('What will it cost you?')).not.toBeInTheDocument();
     expect(screen.queryByText(/SURVEY mode scales with document size/i)).not.toBeInTheDocument();
     expect(screen.getAllByText(/typically, once it starts/i)).toHaveLength(1);
   });
 
-  it('says in the rail why the primary action is disabled, because the destination it needs can be below the fold', async () => {
+  it('says beside Start why it is disabled while no destination is chosen, in both modes', async () => {
     await reachStep2();
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    const rail = screen.getByRole('complementary', { name: 'This run' });
-    expect(screen.getByRole('button', { name: /^continue$/i })).toBeDisabled();
-    expect(rail).toHaveTextContent('Choose an area path to continue.');
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    const start = screen.getByRole('button', { name: /looks right|reading the/i });
+    expect(start).toBeDisabled();
+    expect(start.parentElement).toHaveTextContent('Choose an area path to start.');
   });
 
   it('drops that reason once the destination is filled in', async () => {
     await reachStep2();
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area');
-    expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled();
-    expect(screen.queryByText(/to continue\./i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/to start\./i)).not.toBeInTheDocument();
   });
 });
 
@@ -1318,11 +1318,10 @@ describe('NewJobWizard: remembers the last job\'s destination, and labels its mo
     mockApis();
     renderWizard();
     await uploadAndConfigure();
-    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByText('With AI review'));
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
     await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalled());
@@ -1337,10 +1336,10 @@ describe('NewJobWizard: remembers the last job\'s destination, and labels its mo
     localStorage.setItem('req2ado-last-job:user-descriptor-1', JSON.stringify({ mode: 'survey', project: 'Project', areaPath: 'Project\\Customer Requirements' }));
     renderWizard();
     await uploadAndConfigure();
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /SURVEY/ })).not.toBeChecked();
-    expect(within(screen.getByRole('radio', { name: /SURVEY/ })).getByText('Last used')).toBeInTheDocument();
-    expect(within(screen.getByRole('radio', { name: /BASELINE/ })).queryByText('Last used')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Standard/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /With AI review/ })).not.toBeChecked();
+    expect(within(screen.getByRole('radio', { name: /With AI review/ })).getByText('Last used')).toBeInTheDocument();
+    expect(within(screen.getByRole('radio', { name: /Standard/ })).queryByText('Last used')).not.toBeInTheDocument();
     expect(screen.getByLabelText(/team project/i)).toHaveValue('Project');
     expect(await screen.findByLabelText(/area path/i)).toHaveValue('Project\\Customer Requirements');
   });
@@ -1358,14 +1357,14 @@ describe('NewJobWizard: remembers the last job\'s destination, and labels its mo
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     expect(await screen.findByLabelText(/area path/i)).toHaveValue('Project\\Customer Requirements');
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Standard/ })).toBeChecked();
 
     // Now the user chooses SURVEY; another project's remembered BASELINE does not replace it, but its area path is offered.
-    await userEvent.click(screen.getByRole('radio', { name: /SURVEY/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/ }));
     await userEvent.clear(screen.getByLabelText(/team project/i));
     await userEvent.type(screen.getByLabelText(/team project/i), 'Other');
     await waitFor(() => expect(screen.getByLabelText(/area path/i)).toHaveValue('Other\\Imports'));
-    expect(screen.getByRole('radio', { name: /SURVEY/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /With AI review/ })).toBeChecked();
   });
 
   it('does not start from another user\'s choices', async () => {
@@ -1373,7 +1372,7 @@ describe('NewJobWizard: remembers the last job\'s destination, and labels its mo
     localStorage.setItem('req2ado-last-job:someone-else', JSON.stringify({ mode: 'survey', project: 'Project', areaPath: 'Project\\X' }));
     renderWizard();
     await uploadAndConfigure();
-    expect(screen.getByRole('radio', { name: /BASELINE/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Standard/ })).toBeChecked();
   });
 });
 
@@ -1410,8 +1409,8 @@ describe('NewJobWizard step 2: the rail does not claim a destination the form ha
   });
 });
 
-describe('NewJobWizard step 3 keeps the "This run" rail beside Start (J4, owner decision 2026-11-12)', () => {
-  it('shows the file, the mode and where it lands next to the start button', async () => {
+describe('NewJobWizard keeps the "This run" rail beside Start (J4, owner decision 2026-11-12)', () => {
+  it('shows the mode and where it lands next to the start button, and the file in the strip', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 20, sectionCount: 3, figureCount: 0, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
     } as any);
@@ -1432,16 +1431,15 @@ describe('NewJobWizard step 3 keeps the "This run" rail beside Start (J4, owner 
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
     await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByText('With AI review'));
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument());
 
     const rail = screen.getByRole('complementary', { name: 'This run' });
-    expect(within(rail).getByText('req.docx')).toBeInTheDocument();
-    expect(within(rail).getByText(/SURVEY/)).toBeInTheDocument();
+    expect(within(screen.getByTestId('file-strip')).getByText('req.docx')).toBeInTheDocument(); // the file is said once, in the strip
+    expect(within(rail).getByText(/With AI review/)).toBeInTheDocument();
     expect(within(rail).getByText(/Project/)).toBeInTheDocument();
     // The step's own actions stay in the main column, not the rail.
     expect(within(rail).queryByRole('button', { name: /looks right/i })).not.toBeInTheDocument();
@@ -1500,7 +1498,7 @@ describe('NewJobWizard step 1: a file with a name that was processed before (J3)
 describe('NewJobWizard re-run of a file (P5)', () => {
   const HASH = 'f'.repeat(64);
   const earlier = { id: '4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0', mode: 'survey', status: 'diff_ready', areaPath: 'P\\A', originalFilename: 'spec.docx', itemCount: 5, createdItemCount: 0, createdAt: new Date(Date.now() - 3600 * 1000).toISOString() };
-  async function toStep2(cached: boolean): Promise<void> {
+  async function toStep2(cached: boolean, summary: string | null = null): Promise<void> {
     useAuthStore.getState().logout(); // free-text area path: no ADO pickers to drive
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 20, sectionCount: 3, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [], fileHash: HASH,
@@ -1509,7 +1507,7 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([earlier] as any);
     vi.spyOn(jobsApi, 'getEstimate').mockResolvedValue({ mode: 'survey', lowerMinutes: 20, upperMinutes: 35, basis: 'blended', sampleCount: 4 } as any);
     vi.spyOn(jobsApi, 'getCachedResult').mockResolvedValue(cached);
-    vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(summary);
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['m1'], recommended: null, details: [] });
     render(
       <ToastProvider>
@@ -1521,7 +1519,7 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'spec.docx'));
     await screen.findByText(/already ran a file with this name/i);
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByText('With AI review'));
   }
 
   it('keeps the "already ran a file with this name" note on steps 2 and 3 as one compact line', async () => {
@@ -1530,7 +1528,6 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     expect(within(rail).getByText(/already ran a file with this name/i)).toBeInTheDocument();
     expect(within(rail).getByRole('link', { name: /4270e8be/ })).toHaveAttribute('href', '/jobs/4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0');
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
     await screen.findByRole('button', { name: /looks right/i });
     const rail3 = screen.getByRole('complementary', { name: 'This run' });
     expect(within(rail3).getByText(/already ran a file with this name/i)).toBeInTheDocument();
@@ -1549,7 +1546,7 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     await toStep2(true);
     const rail = screen.getByRole('complementary', { name: 'This run' });
     await within(rail).findByText('A few seconds');
-    const card = screen.getByRole('radio', { name: /SURVEY/ });
+    const card = screen.getByRole('radio', { name: /With AI review/ });
     expect(card).toHaveTextContent('A few seconds');
     expect(card).not.toHaveTextContent('20 min');
     expect(within(rail).queryByText(/n=\d/)).not.toBeInTheDocument();
@@ -1563,10 +1560,8 @@ describe('NewJobWizard re-run of a file (P5)', () => {
   });
 
   it('asks the model afresh on "Write it again", and lets the server answer from its cache the first time', async () => {
-    await toStep2(false);
-    vi.mocked(jobsApi.previewSummary).mockResolvedValue('A summary of the file.');
-    await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    // One page: the summary is asked as soon as With AI review is chosen.
+    await toStep2(false, 'A summary of the file.');
     await screen.findByText('A summary of the file.');
     expect(vi.mocked(jobsApi.previewSummary).mock.calls[0][0]).not.toHaveProperty('fresh');
     await userEvent.click(screen.getByRole('button', { name: /write it again/i }));
@@ -1608,7 +1603,7 @@ describe('NewJobWizard token forecast', () => {
     );
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'spec.docx'));
     await userEvent.click(await screen.findByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByText('With AI review'));
     if (pickModel) {
       await waitFor(() => expect(jobsApi.listModels).toHaveBeenCalled());
       screen.getByRole('combobox', { name: 'AI model' }).focus();
@@ -1616,7 +1611,6 @@ describe('NewJobWizard token forecast', () => {
       await userEvent.click(await screen.findByRole('option', { name: pickModel }));
     }
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
     await screen.findByRole('button', { name: /looks right/i });
   }
 
@@ -1642,7 +1636,7 @@ describe('NewJobWizard token forecast', () => {
     await toStep3(forecast({ requiresConfirmation: false }));
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
     await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText('Start a large SURVEY run?')).not.toBeInTheDocument();
+    expect(screen.queryByText('Start a large With AI review run?')).not.toBeInTheDocument();
   });
 
   it('asks first when the forecast is above the threshold, starts only on confirmation, and not at all on cancel', async () => {
@@ -1650,7 +1644,7 @@ describe('NewJobWizard token forecast', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Start a large SURVEY run?')).toBeInTheDocument();
+    expect(within(dialog).getByText('Start a large With AI review run?')).toBeInTheDocument();
     expect(dialog).toHaveTextContent('690k – 2.1M model tokens (input and output), about $4.20 – $18');
     expect(dialog).toHaveTextContent('With your default model, this run');
     expect(dialog).toHaveTextContent('Plus a short pre-study read of the file’s layout, not counted here.');
@@ -1661,7 +1655,7 @@ describe('NewJobWizard token forecast', () => {
     expect(jobsApi.submitJob).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
-    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start SURVEY run' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start the run' }));
     await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
   });
 
@@ -1682,7 +1676,7 @@ describe('NewJobWizard token forecast', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
     await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText('Start a large SURVEY run?')).not.toBeInTheDocument();
+    expect(screen.queryByText('Start a large With AI review run?')).not.toBeInTheDocument();
   });
 });
 
@@ -1740,7 +1734,7 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     await userEvent.click(start);
   }
 
-  it('is asked once, right after the file is parsed while still on step 1; SURVEY shows the card on step 3 only', async () => {
+  it('is asked once, right after the file is parsed while still on step 1; the reading shows on step 2 in both modes', async () => {
     const learn = vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(VIEW);
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['m1'], recommended: null, details: [] });
@@ -1756,18 +1750,12 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     expect(screen.getByRole('button', { name: /configure|check and start/i })).toBeInTheDocument(); // still on step 1
     expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled(); // nothing held on step 2
-    await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     expect(await screen.findByText(/types are stated in column 'Kind'/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
     expect(await screen.findByText(/types are stated in column 'Kind'/i)).toBeInTheDocument();
-    expect(learn).toHaveBeenCalledTimes(1); // not again on reaching step 3, nor after going back to step 1
+    expect(learn).toHaveBeenCalledTimes(1); // not again on returning to step 2
   });
 
   it('BASELINE reads the file\'s conventions at parse, with the default model, and the job is built from that rulebook', async () => {
@@ -1788,7 +1776,7 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     const learn = vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(VIEW);
     await toStepTwo();
     expect(learn.mock.calls[0][1]).toBe('m1'); // read at parse with the mode and model of that moment
-    await userEvent.click(screen.getByRole('radio', { name: /baseline/i })); // the same page now shows the reading
+    await userEvent.click(screen.getByRole('radio', { name: /Standard/i })); // the same page now shows the reading
     expect(await screen.findByTestId('file-rules-model-hint')).toHaveTextContent('Read with m1. This job will use the default model.');
     expect(learn).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole('button', { name: 'Read again with the default model' }));
@@ -1804,7 +1792,6 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     await toStepTwo();
     expect(learn).toHaveBeenCalledTimes(1);
     expect(learn.mock.calls[0][1]).toBe('m1');
-    await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
     expect(await screen.findByText(/types are stated in column 'Kind'/i)).toBeInTheDocument();
     expect(screen.getByText('Model: m1')).toBeInTheDocument();
     expect(screen.queryByTestId('file-rules-model-hint')).not.toBeInTheDocument(); // the same model: nothing to say
@@ -1814,11 +1801,10 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     const learn = vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(VIEW);
     await toStepTwo();
     expect(learn.mock.calls[0][1]).toBeUndefined(); // BASELINE at parse: the default model
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     screen.getByRole('combobox', { name: 'AI model' }).focus();
     await userEvent.keyboard('{Enter}');
     await userEvent.click(await screen.findByRole('option', { name: 'm1' }));
-    await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
     expect(await screen.findByTestId('file-rules-model-hint')).toHaveTextContent('Read with the default model. This job will use m1.');
     expect(learn).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole('button', { name: 'Read again with m1' }));
@@ -1831,8 +1817,7 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
   it('SURVEY with the Default model sends none', async () => {
     const learn = vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(VIEW);
     await toStepTwo();
-    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
     await waitFor(() => expect(learn).toHaveBeenCalledTimes(1));
     expect(learn.mock.calls[0][1]).toBeUndefined();
   });
@@ -1923,12 +1908,19 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline', rulebookId: 'rb1' }));
   });
 
-  it('with no model connection the reading is skipped, said so, and the job carries no rulebook', async () => {
-    vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(SKIPPED);
+  it('with no model connection Start is blocked in both modes, says why, and offers to read the file again (owner decision, 2026-11-25)', async () => {
+    const learn = vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(SKIPPED);
     await toCheckAndStart();
     expect(await screen.findByTestId('file-rules-skipped')).toBeInTheDocument();
-    await startJob();
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: undefined }));
+    const start = screen.getByRole('button', { name: /looks right/i });
+    expect(start).toBeDisabled();
+    expect(screen.getByTestId('start-needs-model')).toHaveTextContent('An AI model is needed to read the file, in both modes.');
+    await userEvent.click(screen.getByRole('radio', { name: /With AI review/i }));
+    expect(screen.getByRole('button', { name: /looks right/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Read the file again' }));
+    await waitFor(() => expect(learn).toHaveBeenCalledTimes(2));
+    expect(learn.mock.calls[1][2]).toBe(true);
+    expect(jobsApi.submitJob).not.toHaveBeenCalled();
   });
 
   it('holds the start button on "Check and start" while the file is being read, says why, and releases it after', async () => {
@@ -1941,12 +1933,29 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
   });
 
-  it('a failed reading never blocks the job: it says so, and the job carries no rulebook', async () => {
-    vi.spyOn(jobsApi, 'previewRules').mockRejectedValue({ response: { data: { message: 'The model timed out.' } } });
+  it('a failed study holds Start and says why, with no bare server error; Try again asks again and a success frees Start (owner decision, 2026-11-25)', async () => {
+    const learn = vi
+      .spyOn(jobsApi, 'previewRules')
+      .mockRejectedValueOnce({ response: { status: 500, data: { statusCode: 500, message: 'Internal server error' } } })
+      .mockResolvedValue(VIEW);
     await toCheckAndStart();
-    expect(await screen.findByText(/the model timed out\./i)).toBeInTheDocument();
+    const failed = await screen.findByTestId('file-study-failed');
+    expect(screen.getByRole('heading', { name: 'The file could not be studied' })).toBeInTheDocument();
+    expect(failed).toHaveTextContent('The model did not finish reading the file. Start waits until the study succeeds.');
+    expect(failed).not.toHaveTextContent(/internal server error/i);
+    expect(screen.getByTestId('start-study-failed')).toHaveTextContent('Start waits for the file study.');
+    expect(screen.getByRole('button', { name: /looks right/i })).toBeDisabled();
+    await userEvent.click(within(failed).getByRole('button', { name: 'Try again' }));
+    expect(learn).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByTestId('file-study-failed')).not.toBeInTheDocument());
     await startJob();
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: undefined }));
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: 'rb1' }));
+  });
+
+  it('shows the server\'s own reason when it gives one', async () => {
+    vi.spyOn(jobsApi, 'previewRules').mockRejectedValue({ response: { status: 504, data: { message: 'The model took longer than 10 minutes to answer.' } } });
+    await toCheckAndStart();
+    expect(await screen.findByTestId('file-study-failed')).toHaveTextContent('The model took longer than 10 minutes to answer.');
   });
 
   it('an edit that fits replaces the rulebook the job is built from; one that does not is refused with the reason', async () => {
@@ -1987,42 +1996,19 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
   it('shows how long the reading has run', async () => {
     vi.spyOn(jobsApi, 'previewRules').mockReturnValue(new Promise(() => {}));
     await toCheckAndStart();
-    expect(await screen.findByTestId('file-reading-elapsed')).toHaveTextContent(/^\d\d:\d\d so far$/);
+    expect(await screen.findByTestId('file-study-elapsed')).toHaveTextContent(/^\d\d:\d\d so far · Start waits for it$/);
   });
 
-  it('"Stop waiting" frees Start, says the job reads the file itself, and the job carries no rulebook; a late answer never lands', async () => {
+  it('has no "Stop waiting": Start waits for the study, which the job needs, and is released when it answers (owner decision, 2026-11-25)', async () => {
     let finish: (view: never) => void = () => {};
-    const signals: (AbortSignal | undefined)[] = [];
-    vi.spyOn(jobsApi, 'previewRules').mockImplementation((_file, _model, _relearn, signal) => {
-      signals.push(signal);
-      return new Promise((resolve) => (finish = resolve));
-    });
+    vi.spyOn(jobsApi, 'previewRules').mockReturnValue(new Promise((resolve) => (finish = resolve)));
     await toCheckAndStart();
     expect(await screen.findByRole('button', { name: /reading the file/i })).toBeDisabled();
-    await userEvent.click(screen.getByRole('button', { name: 'Stop waiting' }));
-    expect(signals[0]?.aborted).toBe(true);
-    expect(screen.getByTestId('file-reading-stopped')).toHaveTextContent(/the job reads the file's layout and the document when it starts, which adds time to the job/i);
-    await act(async () => finish(VIEW)); // the cancelled request answers anyway
-    expect(screen.queryByText(/types are stated in column 'Kind'/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop waiting' })).toBeNull();
+    expect(screen.getByTestId('file-study-panel')).toHaveTextContent('Studying the file');
+    await act(async () => finish(VIEW));
     await startJob();
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: undefined }));
-  });
-
-  it('"Read now instead" asks again after stopping (reusing a stored reading), and Start waits for it', async () => {
-    const answers: ((view: never) => void)[] = [];
-    const learn = vi.spyOn(jobsApi, 'previewRules').mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
-    await toCheckAndStart();
-    await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Read now instead' }));
-    expect(learn).toHaveBeenCalledTimes(2);
-    expect(learn.mock.calls[1][2]).toBe(false);
-    expect(screen.getByRole('button', { name: /reading the file/i })).toBeDisabled();
-    await act(async () => answers[0](VIEW)); // the stopped request's answer is not this one
-    expect(screen.getByRole('button', { name: /reading the file/i })).toBeDisabled();
-    await act(async () => answers[1]({ ...(VIEW as object), id: 'rb2', rules: ['Read now.'] } as never));
-    expect(await screen.findByText('Read now.')).toBeInTheDocument();
-    await startJob();
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: 'rb2' }));
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: 'rb1' }));
   });
 
   it('too many readings in a minute says so plainly', async () => {

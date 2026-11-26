@@ -31,7 +31,7 @@ from app.chat.rewrite_check import check_rewrite
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
-from app.dedup.embedding_blend import blend_embeddings
+from app.dedup.embedding_blend import embed_titles_and_texts
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
@@ -77,6 +77,7 @@ from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
+from app.leveling.requirement_titles import write_requirement_titles
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.study import (
@@ -89,6 +90,7 @@ from app.leveling.study import (
     study_result_version,
 )
 from app.leveling.study_store import StudyStore
+from app.leveling.suggestions import write_suggestions
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -103,6 +105,7 @@ from app.request_identity import (
 from app.source_excerpt import SourceExcerpt, excerpt_for_span, parse_cached
 from app.study.file_rules import study_tables, table_details
 from app.study.model_rules import check_rulebook, document_details, prestudy, prestudy_version
+from app.study.reading import file_reading
 from app.study.rulebook import FileRulebook, rulebook_from_json, rulebook_to_json
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
@@ -2418,7 +2421,7 @@ async def _survey_level(
     # num_ctx is simpler than mutating this one after the fact.
     client = await _survey_client(model, user_id)
     catalog = json.loads(link_type_catalog) if link_type_catalog else None
-    return await run_in_threadpool(
+    tree = await run_in_threadpool(
         _build_survey_tree_with_scoring,
         doc,
         client,
@@ -2429,6 +2432,20 @@ async def _survey_level(
         primer_context,
         rubric_report,
     )
+    tree = await run_in_threadpool(_with_requirement_titles, tree, _rulebook_of(doc), client, user_id)
+    # With AI review offers wording changes for the items the document's grammar built; they are never applied (app.leveling.suggestions).
+    await run_in_threadpool(write_suggestions, tree.nodes, client, tree.warnings, user_id)
+    return tree
+
+
+def _with_requirement_titles(tree: WorkItemTree, rulebook: FileRulebook | None, client, user_id: str | None) -> WorkItemTree:  # noqa: ANN001
+    """Short titles for the requirements the document's grammar built (app.leveling.requirement_titles), unless the study found the file
+    gives each requirement its own title (title policy "extract"). Fail-open: the extracted titles stay, with a warning."""
+    document = rulebook.document if rulebook is not None else None
+    if getattr(document, "title_policy", None) == "extract":
+        return tree
+    write_requirement_titles(tree.nodes, client, tree.warnings, user_id, settings.survey_chunk_concurrency)
+    return tree
 
 
 # How often a streamed /level sends a heartbeat line while its run works.
@@ -2510,7 +2527,10 @@ def _prestudy_response(doc: CanonicalDoc, rulebook: FileRulebook, source: str, w
         rules += [f"Headings that begin with '{r.label}{r.separator}' are {r.type}s." for r in document.labels]
         rules += [f"Headings at depth {depth + 1} are {name}s." for depth, name in document.depth_types]
         document_part = document_details(doc, document)
+    reading = file_reading(doc, rulebook)  # the new-job page's verdict, decisions and outline (app.study.reading)
     details = {"approximate": document_part is not None, "tables": tables, "document": document_part} if tables or document_part else None
+    if reading is not None:
+        details = {**(details or {"approximate": False, "tables": tables, "document": document_part}), "reading": reading}
     return PrestudyResponse(
         rulebook=rulebook_to_json(rulebook),
         hash=rulebook.hash,
@@ -2782,6 +2802,22 @@ async def level(
         )
     tree = build_baseline_tree(doc, rulebook)
     tree.warnings.extend(stale_rulebook)
+    # Both modes read the file with AI (owner decision, 2026-11-25): a job's requirements get short titles. A call without a user (the
+    # wizard's left-out preview) has no model of its own and keeps the extracted titles.
+    if user_id and any(n.verbatim and n.type == WorkItemType.REQUIREMENT for n in tree.nodes):
+        try:
+            client = await _survey_client(model, user_id)
+        except Exception as exc:  # noqa: BLE001 -- fail-open: titles are an enhancement, never a dependency of the tree
+            logger.warning("Requirement titles skipped: no model client (%s)", type(exc).__name__)
+            tree.warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    "Short titles could not be written: no AI model was available. The requirements keep the title taken from their text.",
+                    detail={"pass": "requirement_titles"},
+                )
+            )
+        else:
+            tree = await run_in_threadpool(_with_requirement_titles, tree, rulebook, client, user_id)
     return _check_requirement_coverage(
         _enforce_requirement_only_fields(_check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc)),
         doc,
@@ -3391,8 +3427,8 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    title_embedding, description_embedding = _embed_for_dedup([body.title, body.text], body.user_id)
-    embedding = blend_embeddings(title_embedding, description_embedding)
+    # An item with no text is embedded by its title (embed_titles_and_texts): an empty text is refused by /llm/embed.
+    [embedding] = embed_titles_and_texts(lambda texts: _embed_for_dedup(texts, body.user_id), [(body.title, body.text)])
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
     # numeric-literal guard (X7) against the actual matched text.
@@ -3469,25 +3505,15 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     for start in range(0, n, chunk_size):
         chunk_items = body.items[start : start + chunk_size]
         try:
-            embeddings = _embed_for_dedup(
-                [item.title for item in chunk_items] + [item.text for item in chunk_items],
-                body.user_id,
+            # Items with no text are embedded by their title (embed_titles_and_texts): an empty text is refused by /llm/embed.
+            blended_embeddings = embed_titles_and_texts(
+                lambda texts: _embed_for_dedup(texts, body.user_id), [(item.title, item.text) for item in chunk_items]
             )
         except HTTPException as exc:
             raise HTTPException(
                 status_code=exc.status_code,
                 detail=f"{str(exc.detail)} (indexed {start} of {n} items before the failure)",
             ) from exc
-        title_embeddings, description_embeddings = (
-            embeddings[: len(chunk_items)],
-            embeddings[len(chunk_items) :],
-        )
-        blended_embeddings = [
-            blend_embeddings(title_embedding, description_embedding)
-            for title_embedding, description_embedding in zip(
-                title_embeddings, description_embeddings
-            )
-        ]
 
         # Group by area_path before calling vector_store.upsert_many -- one
         # Chroma round trip per distinct area path instead of one per item
