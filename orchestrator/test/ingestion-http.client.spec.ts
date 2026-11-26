@@ -880,6 +880,12 @@ describe('IngestionHttpClient.prestudy', () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ source: 'model', details }) });
     expect((await new IngestionHttpClient('http://ingestion.internal').prestudy(MINIMAL_DOC, { userId: 'user-1' })).details).toEqual(details);
   });
+
+  it('uses the long-running dispatcher, so its own 15-minute limit applies instead of fetch\'s default 300 s cut (seen live, 2026-11-26)', async () => {
+    await new IngestionHttpClient('http://ingestion.internal').prestudy(MINIMAL_DOC, { userId: 'user-1' });
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(options.dispatcher).toBeDefined();
+  });
 });
 
 
@@ -1046,5 +1052,22 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
 
       await expect(new IngestionHttpClient('http://ingestion:8000').getKbProfile('u')).rejects.toMatchObject({ status: 500 });
     });
+  });
+});
+
+describe('IngestionHttpClient: model-backed item calls', () => {
+  it('send scoring, score explanation, rewrite comparison and item enhancement through the long-running dispatcher (no 300 s cut)', async () => {
+    const seen: Record<string, unknown> = {};
+    global.fetch = jest.fn(async (url: string, init?: { dispatcher?: unknown }) => {
+      seen[new URL(url).pathname] = init?.dispatcher;
+      throw new Error('stop here: only the request is checked');
+    }) as unknown as typeof fetch;
+    const client = new IngestionHttpClient('http://ingestion.internal') as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    for (const call of ['scoreItem', 'explainScores', 'compareRewrite', 'enhanceItems']) {
+      await client[call]({}, {}, {}).catch(() => undefined);
+    }
+    for (const path of ['/score-item', '/score-explain', '/rewrite/compare', '/enhance-items']) {
+      expect(seen[path]).toBeDefined();
+    }
   });
 });

@@ -1278,10 +1278,12 @@ def test_load_docx_heading_detection_takes_precedence_over_list_item_detection()
         doc.save(str(out_path))
         result = load_docx(str(out_path))
 
-    block = next(b for b in result.blocks if b.text == "Numbered Heading")
+    block = next(b for b in result.blocks if b.text.endswith("Numbered Heading"))
     # Heading detection must take precedence: this is HEADING, never LIST_ITEM
     assert block.kind == BlockKind.HEADING
     assert block.heading_level == 1
+    # Word numbers it (the numPr), so its number is part of the heading as the reader sees it.
+    assert block.text == "1 Numbered Heading"
 
 
 def test_load_docx_names_a_figure_from_its_caption_styled_paragraph() -> None:

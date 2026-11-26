@@ -1508,3 +1508,48 @@ describe('NodeDetailPanel: the edit form puts the text first', () => {
   });
 });
 });
+
+describe('NodeDetailPanel: what the file states', () => {
+  const requirement: DryRunDiffEntry = {
+    localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'The remote shall pair within 5 s.',
+    action: 'create', customerId: 'PWR-6', tags: [],
+  };
+
+  it('shows the file\'s Requirement type, its tags and the words marked in the text, saying the marks are not written', () => {
+    renderPanel(<NodeDetailPanel entry={{ ...requirement, requirementType: 'Performance', fileTags: ['Power', 'Safety'], derivedMarks: ['TBD', 'Should'] }} />);
+    const details = screen.getByTestId('file-details');
+    expect(details).toHaveTextContent('Requirement typePerformance');
+    expect(details).toHaveTextContent('Tags from the filePower, Safety');
+    expect(details).toHaveTextContent('Marked in the textTBD · Should (for filtering, not written)');
+  });
+
+  it('says a Requirement\'s type is not stated when the file gives none, and shows nothing for an Epic with nothing stated', () => {
+    const { unmount } = renderPanel(<NodeDetailPanel entry={requirement} />);
+    expect(screen.getByTestId('file-details')).toHaveTextContent('Requirement typeNot stated in the file');
+    expect(screen.queryByText('Tags from the file')).toBeNull();
+    unmount();
+    renderPanel(<NodeDetailPanel entry={{ ...requirement, type: 'Epic', customerId: null }} />);
+    expect(screen.queryByTestId('file-details')).toBeNull();
+  });
+});
+
+describe('NodeDetailPanel: an Epic or Feature with no text of its own', () => {
+  const feature: DryRunDiffEntry = { localId: 'f1', parentLocalId: null, type: 'Feature', title: 'Supply', description: '', action: 'create', customerId: null, tags: [] };
+
+  it('says its description is empty because the file has none, and shows its own sections in place of the coverage line', () => {
+    renderPanel(<NodeDetailPanel entry={feature} parentSlot={<p>Under it slot</p>} descendantCounts={{ epics: 0, features: 0, requirements: 4 }} />);
+    expect(screen.getByTestId('empty-description')).toHaveTextContent('Empty. The file has no text of its own for this Feature, so no description is written.');
+    expect(screen.getByText('Under it slot')).toBeInTheDocument();
+    expect(screen.queryByText(/^Covers /)).toBeNull();
+  });
+});
+
+describe('NodeDetailPanel: an Epic with empty file tags and marks', () => {
+  it('renders no stray "0" from the empty lists (seen in the browser walk, 2026-11-26)', () => {
+    const epic: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Power', description: 'Text.', action: 'create', customerId: null, tags: [], fileTags: [], derivedMarks: [] };
+    const { container } = renderPanel(<NodeDetailPanel entry={epic} />);
+    expect(screen.queryByTestId('file-details')).toBeNull();
+    const zeros = [...container.querySelectorAll('*')].flatMap((el) => [...el.childNodes]).filter((n) => n.nodeType === 3 && n.textContent?.trim() === '0');
+    expect(zeros).toHaveLength(0);
+  });
+});

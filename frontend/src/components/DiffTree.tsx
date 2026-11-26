@@ -119,6 +119,8 @@ export interface DiffSuggestion {
   proposedDescription: string | null;
   decision: 'pending' | 'accepted' | 'rejected' | 'discussed';
   createdAt: string;
+  // Who suggested it: the item's assistant (absent) or With AI review while the job ran.
+  origin?: 'assistant' | 'ai_review';
 }
 
 // What an accepted suggestion replaced, kept so Undo can put it back, scores included. The server refuses an Undo once the item was edited since.
@@ -150,6 +152,12 @@ export interface DryRunDiffEntry {
   // job shapes and non-Requirement entries predate/never carry this field.
   seCoverageRef?: string | null;
   tags?: string[];
+  // What the file states (written to System.Tags and the Requirement Type field), the review marks read from a requirement's text (filters
+  // only, never written), and the type the reviewer changed it from (Undo goes back to it).
+  fileTags?: string[];
+  requirementType?: string | null;
+  derivedMarks?: string[];
+  retypedFrom?: string;
   // A section the run generated (proposed acceptance criteria, or a "Needs author input" note), held apart from `description`: it is
   // written to ADO only while `proposalAccepted` is true, and only a criteria proposal can be accepted. See ProposalCard.
   proposal?: { kind: 'criteria' | 'needs-input'; html: string } | null;
@@ -491,10 +499,13 @@ export function DiffTree({
   onMove,
   canMove,
   writtenAdoIds,
+  rowNotes,
 }: {
   entries: DryRunDiffEntry[];
   // Azure DevOps id of each item already written, by localId (a finished or partly written job). Shown as a link in the Status column.
   writtenAdoIds?: Record<string, number>;
+  // Quiet words a row adds after its marks, by localId ("Spelling fixed", "Accepted without ID"), from the job's reading and warnings.
+  rowNotes?: Record<string, string[]>;
   selectedId: string | null;
   onSelect: (localId: string) => void;
   // Opens the details dialog for a node -- distinct from onSelect (which
@@ -958,6 +969,7 @@ export function DiffTree({
               orgUrl,
               project,
               writtenAdoIds,
+              rowNotes,
               canMove: !!canMove,
               isFiltering,
               collapsedIds,
@@ -1013,6 +1025,7 @@ function DiffTreeRow({
   orgUrl,
   project,
   writtenAdoIds,
+  rowNotes,
   canMove,
   narrow,
   rowIdPrefix,
@@ -1039,6 +1052,8 @@ function DiffTreeRow({
   orgUrl?: string | null;
   project?: string | null;
   writtenAdoIds?: Record<string, number>;
+  // Quiet words a row adds after its marks, by localId ("Spelling fixed", "Accepted without ID"), from the job's reading and warnings.
+  rowNotes?: Record<string, string[]>;
   canMove: boolean;
   // below md (one query in DiffTree, so header, rows and row height always flip together)
   narrow: boolean;
@@ -1258,6 +1273,14 @@ function DiffTreeRow({
     )}
     </>
   );
+  // TBD, Should, Will, No obligation: quiet words, read from the requirement's own text, for the filter chips above the tree. Never written.
+  // Then the row's notes ("Spelling fixed", "Accepted without ID"): just as quiet.
+  const rowWords = [...(entry.derivedMarks ?? []), ...(rowNotes?.[entry.localId] ?? [])];
+  const marksEl = rowWords.length ? (
+    <span className="flex-none text-xs text-ink-3" title="Read from the item's text or decided in this review. Never written to Azure DevOps." data-testid="row-marks">
+      {rowWords.join(' · ')}
+    </span>
+  ) : null;
   const excludedEl = (
     <>
     {parentIsExcluded && !entry.excluded && (
@@ -1367,11 +1390,14 @@ function DiffTreeRow({
         {canMove && <GripVertical className="h-3.5 w-3.5" />}
       </span>
       <span onClick={(e) => e.stopPropagation()} className="flex justify-center">
+        {/* Checked means "will be written" (owner decision, 2026-11-25): every item starts checked, and unchecking leaves the item and
+            everything under it out. Under a left-out parent the box is unchecked and disabled: the parent decides. */}
         <Checkbox
           tabIndex={controlTab}
-          ariaLabel={`Exclude ${entry.title}`}
-          checked={!!entry.excluded}
-          onCheckedChange={(checked) => onToggleExclude(entry.localId, checked)}
+          ariaLabel={`Write ${entry.title}${parentIsExcluded && !entry.excluded ? ' (its parent is left out)' : ''}`}
+          checked={!entry.excluded && !parentIsExcluded}
+          disabled={parentIsExcluded && !entry.excluded}
+          onCheckedChange={(checked) => onToggleExclude(entry.localId, !checked)}
         />
       </span>
 
@@ -1440,6 +1466,7 @@ function DiffTreeRow({
                 {reasonEl}
                 {customerIdEl}
                 {excludedEl}
+                {marksEl}
               </span>
             </div>
           </>
@@ -1451,7 +1478,8 @@ function DiffTreeRow({
               on any non-CMMI project this lookup missed silently and every
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
-          <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
+          {/* Icon only, as in the narrow row (the approved mockup, 2026-11-25): the type's glyph and colour say it, the row's description names it. */}
+          <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} iconOnly />
           {/* The Customer ID leads the title, like a clause number: at the end of a long title it was the first mark to be cut away. */}
           {customerIdEl}
           {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
@@ -1474,6 +1502,7 @@ function DiffTreeRow({
             {excludedEl}
             {!criteriaInStatusColumn(entry) && criteriaEl}
             {lockEl}
+            {marksEl}
           </span>
         </span>
         )}

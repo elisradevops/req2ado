@@ -46,26 +46,43 @@ export function WriteBar({
     [blocked ? 'write-blocked-reason' : null, !canWriteToAdo ? 'write-ado-reason' : null, showNothingToWrite ? 'write-nothing-reason' : null]
       .filter(Boolean)
       .join(' ') || undefined;
-  const writeButton = (
+  // One button that names the next step (owner decision, 2026-11-25): "Fix 1 item" while something blocks the write -- plain, not the yellow
+  // control, because it does not write; it takes the reviewer to the first blocker -- then "Write 156 items", the one yellow control. Its
+  // accessible name says where the items go; the visible words stay part of it (WCAG 2.5.3).
+  const total = includedCount !== undefined ? includedCount + leftOutCount : undefined;
+  const writeLabel =
+    includedCount === undefined || total === undefined
+      ? 'Write to Azure DevOps'
+      : `Write ${includedCount === total ? total.toLocaleString() : `${includedCount.toLocaleString()} of ${total.toLocaleString()}`} ${total === 1 ? 'item' : 'items'}`;
+  const writeButton = blocked ? (
+    <span className="max-md:flex-1">
+      <Button variant="primary" onClick={onWrite} aria-describedby={describedBy} disabled={busy} className="max-md:min-h-11 max-md:w-full">
+        Fix {blockedCount.toLocaleString()} {blockedCount === 1 ? 'item' : 'items'}
+      </Button>
+    </span>
+  ) : (
     <span className="max-md:flex-1">
       <Button
         variant="cta"
         onClick={onWrite}
-        softDisabled={blocked}
+        aria-label={writeLabel === 'Write to Azure DevOps' ? undefined : `${writeLabel} to Azure DevOps`}
         aria-describedby={describedBy}
         disabled={busy || !canWriteToAdo}
         className="max-md:min-h-11 max-md:w-full"
       >
         <Upload className="h-3.5 w-3.5" />
-        Write to Azure DevOps
+        {writeLabel}
       </Button>
     </span>
   );
   return (
     // Its own panel at the end of the review (DESIGN.md §11.3.5): inset from the card above, bordered, with its own shadow. On a phone it clears the home indicator.
+    // Sticky to the bottom of the screen (owner decision, 2026-11-25: the write bar ends the tree and stays in reach). Being positioned also keeps
+    // its screen-reader text inside it: unpositioned, that absolute text sat at its place in the scrolled page and made the window scroll.
     <section
       aria-label="Review decision"
-      className="mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
+      data-dock
+      className="sticky bottom-0 z-10 mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
     >
       {(includedCount !== undefined || blocked || !canWriteToAdo || showNothingToWrite) && (
         <div className="mr-auto flex min-w-0 flex-col gap-0.5 max-md:mr-0">
@@ -109,7 +126,7 @@ export function WriteBar({
           <X className="h-3.5 w-3.5" />
           Reject
         </Button>
-        {canWriteToAdo ? <Tooltip content="Write the reviewed items to Azure DevOps">{writeButton}</Tooltip> : writeButton}
+        {canWriteToAdo && !blocked ? <Tooltip content="Write the reviewed items to Azure DevOps">{writeButton}</Tooltip> : writeButton}
       </div>
     </section>
   );

@@ -57,6 +57,8 @@ export function Dialog({
   restoreFocus = true,
   describedById,
   onEscapeKeyDown,
+  // 'right': a panel along the right edge, full height (full width on a phone), for reading beside the page rather than a decision.
+  placement = 'center',
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -73,6 +75,7 @@ export function Dialog({
   describedById?: string;
   // Called before Escape closes the dialog; `preventDefault()` keeps it open (a caller with a layer of its own to close first).
   onEscapeKeyDown?: (event: KeyboardEvent) => void;
+  placement?: 'center' | 'right';
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -127,7 +130,11 @@ export function Dialog({
           // Falls back to 50%/50% (the box's own center) whenever no real
           // click anchored this open -- keyboard-triggered opens, or the
           // very first render before any pointerdown has ever fired.
-          className={`fixed left-1/2 top-1/2 z-50 flex w-[calc(100%-36px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-md bg-surface shadow-dialog [transform-origin:var(--dialog-origin-x,50%)_var(--dialog-origin-y,50%)] focus:outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-accent focus-visible:outline-offset-2 data-[state=open]:animate-[dialogIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[dialogOut_var(--duration-exit)_var(--ease-in)] ${maxWidthClassName} ${maxHeightClassName ?? ''}`}
+          className={
+            placement === 'right'
+              ? `fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-surface shadow-dialog focus:outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-accent focus-visible:outline-offset-2 data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)] sm:max-w-[460px]`
+              : `fixed left-1/2 top-1/2 z-50 flex w-[calc(100%-36px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-md bg-surface shadow-dialog [transform-origin:var(--dialog-origin-x,50%)_var(--dialog-origin-y,50%)] focus:outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-accent focus-visible:outline-offset-2 data-[state=open]:animate-[dialogIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[dialogOut_var(--duration-exit)_var(--ease-in)] ${maxWidthClassName} ${maxHeightClassName ?? ''}`
+          }
         >
           <div className="flex flex-none flex-col gap-1 px-5 pt-4 pb-3">
             <div className="flex items-start justify-between gap-3">

@@ -154,3 +154,18 @@ describe('ToastProvider', () => {
     expect(screen.getByText('502')).toBeInTheDocument();
   });
 });
+
+describe('ToastProvider: above a docked bar', () => {
+  it('moves its toasts up while a bar is docked to the bottom of the screen, so a toast never covers the Write or Start button', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <TriggerButton message="Saved." severity="success" />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Trigger' }));
+    const viewport = (await screen.findByText('Saved.')).closest('ol')!;
+    expect(viewport.className).toContain('[body:has([data-dock])_&]:bottom-28');
+    expect(viewport.className).toContain('max-md:[body:has([data-dock])_&]:bottom-44');
+  });
+});

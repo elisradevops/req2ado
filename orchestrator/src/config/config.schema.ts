@@ -133,6 +133,7 @@ export const configSchema = z.object({
   // ingestion's own _LLM_REQUEST_TIMEOUT_SECONDS (30 min) and this
   // orchestrator's IngestionHttpClient LONG_RUNNING_AGENT (1h), so the
   // innermost hop always fails first with real margin to spare.
+  // Also the header and body timeout of the file calls' own dispatcher (OpenWebUiClient.llmAgent): without it Node's fetch cut them at 300 s.
   LLM_REQUEST_TIMEOUT_MS: z.coerce.number().default(600_000),
   // The whole-document primer (the first long step of a SURVEY job) may take this long in total (upload, processing, reading)
   // before the job carries on without it. 0 = no limit (the behaviour before this existed). Kept well under

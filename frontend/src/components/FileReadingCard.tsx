@@ -39,11 +39,42 @@ interface Props {
   /** SURVEY's knowledge-base readiness, shown at the foot of the card. */
   knowledgeBase?: React.ReactNode;
   onRelearn: () => void;
-  /** Stops waiting for both readings (the file's layout and the document): Start goes free, and the job reads what is missing itself. */
-  onStopWaiting: () => void;
-  /** After stopping: reads the file now after all. */
-  onReadNow: () => void;
   onSaveEdit: (rulebook: Record<string, unknown>) => Promise<string | null>;
+}
+
+/** With AI review's optional summary of the file: its text once written, one line while it is written (Start never waits), and "Write it
+ * again". Shared by this card and the study panel, so the summary shows whichever of the two the page uses. */
+export function AiSummaryBlock({ aiSummary, onRewriteSummary }: { aiSummary: Props['aiSummary']; onRewriteSummary: () => void }): React.ReactElement {
+  return (
+    <>
+      {aiSummary.status === 'ready' && aiSummary.text && (
+        <div className="flex flex-col gap-1">
+          <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
+          <span className="text-xs text-ink-3">AI summary, written by a model from the document’s headings and opening text. Check it against the file.</span>
+        </div>
+      )}
+      {aiSummary.status === 'pending' && (
+        <p className="flex items-center gap-2 text-xs text-ink-3" role="status" data-testid="ai-summary-pending">
+          <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
+        </p>
+      )}
+      {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
+      {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
+      {aiSummary.status !== 'idle' && (
+        <Button
+          variant="outline"
+          size="sm"
+          className={aiSummary.status === 'pending' ? 'cursor-default self-start opacity-60' : 'self-start'}
+          aria-disabled={aiSummary.status === 'pending'}
+          onClick={() => {
+            if (aiSummary.status !== 'pending') onRewriteSummary();
+          }}
+        >
+          Write it again
+        </Button>
+      )}
+    </>
+  );
 }
 
 /** What is being waited on, as one line: the step (of two), and the part of the document for the second. Null when nothing is. */
@@ -59,12 +90,11 @@ export function readingLine(rules: FileReadingRules, study: FileReadingStudy): s
 /**
  * The wizard's one card about the file (BASELINE and SURVEY alike): what the file is and how it is built (its sections), what is left out (front
  * matter, by the document's own headings and pages), how items will be built (the rules, in words), and what the model learned from reading it.
- * One status line, one timer and one "Stop waiting" for the two readings Start waits on (DESIGN.md §11.2, §16.15, §16.20).
+ * One status line and one timer for the two readings Start waits on (DESIGN.md §11.2, §16.15, §16.20).
  */
-export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary, rules, study, knowledgeBase, onRelearn, onStopWaiting, onReadNow, onSaveEdit }: Props): React.ReactElement {
+export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary, rules, study, knowledgeBase, onRelearn, onSaveEdit }: Props): React.ReactElement {
   const waiting = readingLine(rules, study);
   const startedAt = rules.status === 'loading' ? rules.startedAt : study.startedAt;
-  const stopped = rules.status === 'cancelled' || study.status === 'cancelled';
   return (
     <SectionCard title="This file and how it will be read">
       <div className="flex flex-col gap-4" data-testid="file-reading-card">
@@ -79,47 +109,13 @@ export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary
                 <ElapsedTimer startedAt={startedAt} /> so far
               </span>
             )}
-            {/* "Stop waiting" is in the sticky Start bar, beside the button it frees: one button for both readings. */}
           </div>
         )}
         {rules.modelLabel && rules.status !== 'idle' && rules.status !== 'cancelled' && !rules.view?.skipped && (
           <p className="font-mono text-meta text-ink-3">Model: {rules.modelLabel}</p>
         )}
-        {stopped && (
-          <div className="flex flex-wrap items-center gap-2" data-testid="file-reading-stopped">
-            <p className="text-sm text-ink-2">Stopped waiting. The job reads the file&apos;s layout and the document when it starts, which adds time to the job.</p>
-            <Button size="sm" variant="outline" onClick={onReadNow}>
-              Read now instead
-            </Button>
-          </div>
-        )}
 
-        {aiSummary.status === 'ready' && aiSummary.text && (
-          <div className="flex flex-col gap-1">
-            <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
-            <span className="text-xs text-ink-3">AI summary, written by a model from the document’s headings and opening text. Check it against the file.</span>
-          </div>
-        )}
-        {aiSummary.status === 'pending' && (
-          <p className="flex items-center gap-2 text-xs text-ink-3" role="status" data-testid="ai-summary-pending">
-            <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
-          </p>
-        )}
-        {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
-        {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
-        {aiSummary.status !== 'idle' && (
-          <Button
-            variant="outline"
-            size="sm"
-            className={aiSummary.status === 'pending' ? 'cursor-default self-start opacity-60' : 'self-start'}
-            aria-disabled={aiSummary.status === 'pending'}
-            onClick={() => {
-              if (aiSummary.status !== 'pending') onRewriteSummary();
-            }}
-          >
-            Write it again
-          </Button>
-        )}
+        <AiSummaryBlock aiSummary={aiSummary} onRewriteSummary={onRewriteSummary} />
 
         <section className="flex flex-col gap-1.5" aria-label="Structure">
           <h3 className="text-xs font-semibold text-ink-2">From the file’s text and structure</h3>
@@ -158,8 +154,6 @@ export function FileReadingCard({ overview, leftOut, aiSummary, onRewriteSummary
               modelLabel={rules.modelLabel}
               modelHint={rules.modelHint}
               onRelearn={onRelearn}
-              onStopWaiting={onStopWaiting}
-              onReadNow={onReadNow}
               onSaveEdit={onSaveEdit}
             />
           </section>

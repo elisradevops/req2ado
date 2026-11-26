@@ -87,6 +87,12 @@ export interface DryRunTreeNode {
   seCoverageRef: string | null;
   areaPath: string;
   tags: string[];
+  // What the file states (System.Tags, the Requirement Type field), the review marks (never written) and With AI review's suggested
+  // wording (offered as the entry's suggestion, never applied). See ingestion's WorkItemNode; absent for an older ingestion result.
+  fileTags?: string[];
+  requirementType?: string | null;
+  derivedMarks?: string[];
+  descriptionSuggestion?: string | null;
   // SURVEY-only signals (see ingestion's WorkItemNode) -- null/undefined for
   // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
   groundingScore?: number | null;
@@ -174,6 +180,8 @@ export type DiffSuggestion = {
   proposedDescription: string | null;
   decision: SuggestionDecision;
   createdAt: string;
+  // Who suggested it: the item's assistant (absent, the original meaning) or With AI review while the job ran.
+  origin?: 'assistant' | 'ai_review';
 };
 
 // What an accepted suggestion replaced, so Undo can put it back exactly, scores included. `afterHash` identifies the text that was applied:
@@ -244,6 +252,11 @@ export interface DryRunDiffEntry {
   customerId: string | null;
   seCoverageRef: string | null;
   tags: string[];
+  // The file's own tags (written to System.Tags) and Requirement Type (written to the Requirement Type field, winning over a model's),
+  // and the marks the review filters by (read from the requirement's text, never written).
+  fileTags?: string[];
+  requirementType?: string | null;
+  derivedMarks?: string[];
   groundingScore?: number | null;
   prompts?: { name: string; version: number; sha256: string }[];
   qualityScore?: number | null;
@@ -287,6 +300,8 @@ export interface DryRunDiffEntry {
   // The assistant's newest suggestion for this item and what the reviewer did with it; and what an accepted one replaced (for Undo).
   suggestion?: DiffSuggestion | null;
   previousRevision?: DiffRevision | null;
+  // The type the item had before the reviewer changed it (JobsService.changeDiffEntryType), so Undo can put it back. Absent when unchanged.
+  retypedFrom?: string;
   // Reviewer has checked this item (see JobsService.setDiffEntriesReviewed).
   // Advisory progress state for working through integrity warnings --
   // confirm() never reads it, so it never changes what is written to ADO.
@@ -480,6 +495,31 @@ interface IdentityMatch {
 }
 
 // Only the W1 fields a node actually has, so an entry from an older ingestion result keeps exactly its previous shape.
+/**
+ * What the file states and the review reads, carried onto every entry (all three diffOneNode branches): the file's tags and Requirement
+ * Type, the review marks, and With AI review's suggested wording as the entry's pending suggestion -- the same slot the item's assistant
+ * uses, so the reviewer accepts, discusses or rejects it the same way. Its id is derived from the item, so the same tree gives the same diff.
+ */
+function fileReadFieldsOf(node: DryRunTreeNode): Pick<DryRunDiffEntry, 'fileTags' | 'requirementType' | 'derivedMarks' | 'suggestion'> {
+  return {
+    ...(node.fileTags?.length ? { fileTags: node.fileTags } : {}),
+    ...(node.requirementType ? { requirementType: node.requirementType } : {}),
+    ...(node.derivedMarks?.length ? { derivedMarks: node.derivedMarks } : {}),
+    ...(node.descriptionSuggestion
+      ? {
+          suggestion: {
+            id: `ai-review-${node.localId}`,
+            proposedTitle: null,
+            proposedDescription: node.descriptionSuggestion,
+            decision: 'pending' as const,
+            createdAt: new Date(0).toISOString(),
+            origin: 'ai_review' as const,
+          },
+        }
+      : {}),
+  };
+}
+
 function identityFieldsOf(node: DryRunTreeNode): Pick<DryRunDiffEntry, 'identityHashV2' | 'contentHash'> {
   return {
     ...(node.identityHashV2 !== undefined ? { identityHashV2: node.identityHashV2 } : {}),
@@ -631,7 +671,7 @@ export class DryRunService {
     dedupCheck?: (text: string, title: string, areaPath: string, typeCategory: string, localId: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry> {
     {
-      const identity = identityFieldsOf(node);
+      const identity = { ...identityFieldsOf(node), ...fileReadFieldsOf(node) };
       const matched = match(node);
       if (matched !== null) {
         const { existingAdoId } = matched;

@@ -80,7 +80,7 @@ export function KbUnlistedContentDialog({ open, onOpenChange }: { open: boolean;
       open={open}
       onOpenChange={(next) => !busy && onOpenChange(next)}
       title="Check for unlisted content"
-      description="Stored content that is missing from your document list can still be read by SURVEY jobs, next to the current copy of the same file."
+      description="Stored content that is missing from your document list can still be read by With AI review jobs, next to the current copy of the same file."
       footer={
         <>
           <span className="ml-auto" />

@@ -229,6 +229,48 @@ export interface RulebookDetails {
   }[];
   /** A document's headings the rules state a type for: an estimate, never exact. */
   document?: { typeCounts: LadderCounts; samples: Partial<Record<string, RulebookSample[]>>; approximate: true } | null;
+  /** What the new-job page shows about a studied document (ingestion's app.study.reading); absent for a spreadsheet or an older rulebook. */
+  reading?: FileReading | null;
+}
+
+/** One Epic or Feature the job will build, with every proposal undecided (the file's original). */
+export interface ReadingOutlineItem {
+  id: string;
+  parent: string | null;
+  type: 'Epic' | 'Feature';
+  title: string;
+  /** The heading it was built from, which a decision names; null for the document's own Epic. */
+  headingId: string | null;
+  requirements: number;
+}
+
+export type ProposalDecision = 'accept' | 'keep';
+
+/** A structure change the study proposes for one heading: never applied until the user accepts it. */
+export interface ReadingDecision {
+  headingId: string;
+  action: 'rename' | 'drop_wrapper';
+  title: string;
+  newTitle: string | null;
+  reason: string;
+  decision: ProposalDecision | null;
+}
+
+/** The verdict, the decisions, the fixes and the outline of a studied document. */
+export interface FileReading {
+  kind: 'requirements_export' | 'requirements_spec' | 'prose_spec' | 'other' | null;
+  coverTitle: string | null;
+  requirements: number;
+  withIds: number;
+  epics: number;
+  features: number;
+  outline: ReadingOutlineItem[];
+  outlineMore: number;
+  decisions: ReadingDecision[];
+  fixes: { headingId: string; from: string; to: string }[];
+  examples: { customerId: string; title: string; under: string | null }[];
+  leftOut: { text: string; page?: number | null; pageEnd?: number | null }[];
+  context: string[];
 }
 
 // Reads how the file states its structure (the model is asked, with the file attached; a rulebook stored for this user and file is returned without
@@ -605,6 +647,20 @@ export interface MoveDiffEntryInput {
   // reparent that also needs a specific slot).
   anchorLocalId?: string | null;
   placement?: 'before' | 'after';
+}
+
+// How the file was read for a job (the new-job page's reading, from the rulebook the job was built from) and the code shape it learned; a
+// null reading for a job built without one.
+export async function getJobFileReading(jobId: string): Promise<{ reading: FileReading | null; codes: string[] }> {
+  const response = await httpClient.get(`/jobs/${jobId}/file-reading`);
+  return response.data;
+}
+
+// Changes an item's type within the ladder (owner decision, 2026-11-25). The server allows only a type the item's parent allows and that allows
+// its children, only for an item this job creates and has not written; Undo is the same call with the entry's `retypedFrom`.
+export async function changeDiffEntryType(jobId: string, localId: string, type: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/type`, { type });
+  return response.data;
 }
 
 export async function moveDiffEntry(jobId: string, localId: string, input: MoveDiffEntryInput): Promise<{ dryRunDiff: unknown }> {

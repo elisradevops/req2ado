@@ -18,16 +18,17 @@ interface HarnessProps {
   onEditFirst?: (seed: { title: string; description: string }) => void;
   onDiscuss?: (patch: { title?: string; description?: string }) => Promise<void> | void;
   onReject?: () => void;
+  originLabel?: string;
 }
 
 // Stands in for the item dialog: the real hook, and the review it feeds.
-function Harness({ proposal, item = REQUIREMENT, localId = 'n0', onAccept = vi.fn(), onEditFirst = vi.fn(), onDiscuss, onReject = vi.fn() }: HarnessProps): React.ReactElement {
+function Harness({ proposal, item = REQUIREMENT, localId = 'n0', onAccept = vi.fn(), onEditFirst = vi.fn(), onDiscuss, onReject = vi.fn(), originLabel }: HarnessProps): React.ReactElement {
   const review = useProposalReview('job-1', localId, item.type === 'Requirement');
   useEffect(() => {
     review.setProposal(proposal);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proposal]);
-  return <ProposalReview review={review} item={item} onAccept={onAccept} onEditFirst={onEditFirst} onDiscuss={onDiscuss} onReject={onReject} />;
+  return <ProposalReview review={review} item={item} onAccept={onAccept} onEditFirst={onEditFirst} onDiscuss={onDiscuss} onReject={onReject} originLabel={originLabel} />;
 }
 
 const comparison = (overrides: Record<string, unknown> = {}) => ({
@@ -479,5 +480,23 @@ describe('ProposalReview: the Changes view and the toggle', () => {
     render(<Harness proposal={text(`${huge} extra`)} item={{ ...ORIGINAL, description: huge }} />);
     expect(await screen.findByText(/too long to compare word by word/i)).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'View' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ProposalReview: who suggested it', () => {
+  it('says when the suggestion came from With AI review, not the item\'s assistant; says nothing for the assistant', () => {
+    vi.mocked(chatApi.checkRewrite).mockReturnValue(new Promise(() => {}));
+    const { rerender } = render(<Harness proposal={text('The receiver shall lock within 2 s.')} originLabel="Suggested by With AI review while the job ran." />);
+    expect(screen.getByTestId('suggestion-origin')).toHaveTextContent('Suggested by With AI review while the job ran.');
+    rerender(<Harness proposal={text('The receiver shall lock within 2 s.')} />);
+    expect(screen.queryByTestId('suggestion-origin')).toBeNull();
+  });
+});
+
+describe('ProposalReview: no source comment on screen', () => {
+  it('shows no code comment as text (a "//" comment once rendered beside the decision)', () => {
+    vi.mocked(chatApi.checkRewrite).mockReturnValue(new Promise(() => {}));
+    const { container } = render(<Harness proposal={text('The receiver shall lock within 2 s.')} />);
+    expect(container.textContent).not.toMatch(/\/\/\s*Sticky/);
   });
 });

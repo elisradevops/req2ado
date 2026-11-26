@@ -456,6 +456,8 @@ export class IngestionHttpClient {
   ): Promise<{ qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null; qualityConfidence: string | null }> {
     const response = await fetch(`${this.baseUrl}/score-item`, {
       method: 'POST',
+      // A model call behind it: the long-running dispatcher, so fetch's default 300 s header cut does not end it first.
+      dispatcher: this.longRunningAgent,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         description,
@@ -515,6 +517,8 @@ export class IngestionHttpClient {
   }): Promise<ScoreExplanation> {
     const response = await fetch(`${this.baseUrl}/score-explain`, {
       method: 'POST',
+      // A model call behind it: the long-running dispatcher, so fetch's default 300 s header cut does not end it first.
+      dispatcher: this.longRunningAgent,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         title: input.title,
@@ -603,6 +607,8 @@ export class IngestionHttpClient {
         ...(options.fileId ? { 'X-Req2Ado-File-Id': options.fileId } : {}),
       },
       body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}), ...(options.rulebook ? { rulebook: options.rulebook } : {}), ...(options.fresh ? { fresh: true } : {}) }),
+      // Ingestion answers only when every ask is done: without this dispatcher fetch's default 300 s header cut fires before PRESTUDY_TIMEOUT_MS.
+      dispatcher: this.longRunningAgent,
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     });
     if (!response.ok) throw await _ingestionError(response, 'Ingestion /prestudy request failed: ');
@@ -688,6 +694,8 @@ export class IngestionHttpClient {
   ): Promise<RewriteComparison> {
     const response = await fetch(`${this.baseUrl}/rewrite/compare`, {
       method: 'POST',
+      // A model call behind it: the long-running dispatcher, so fetch's default 300 s header cut does not end it first.
+      dispatcher: this.longRunningAgent,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         original_title: original.title,
@@ -735,6 +743,8 @@ export class IngestionHttpClient {
   }> {
     const response = await fetch(`${this.baseUrl}/enhance-items`, {
       method: 'POST',
+      // A model call behind it: the long-running dispatcher, so fetch's default 300 s header cut does not end it first.
+      dispatcher: this.longRunningAgent,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enhancement_pass: enhancementPass, items, user_id: userId ?? null, model: model ?? null }),
     });

@@ -780,6 +780,69 @@ describe('JobsService.confirm', () => {
     expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
   });
 
+  // What the file states (owner decisions, 2026-11-25): its Requirement Type wins over the model's classification, its tags go to
+  // System.Tags, and the review marks are never written.
+  const confirmWith = async (entries: Record<string, unknown>[]) => {
+    const createWorkItem = jest.fn().mockImplementation(async () => ({ id: 300 + createWorkItem.mock.calls.length }));
+    const discoverFieldsDetailed = jest.fn().mockResolvedValue([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+      {
+        referenceName: 'Microsoft.VSTS.CMMI.RequirementType',
+        allowedValues: ['Business Objective', 'Feature', 'Functional', 'Interface', 'Operational', 'Quality of Service', 'Safety', 'Scenario', 'Security'],
+        alwaysRequired: true,
+      },
+    ]);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
+          dryRunDiff: entries.map((e, i) => ({
+            localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+            action: 'create', existingAdoId: null, sourceHash: `h${i}`, customerId: null, sourceRef: null, tags: [], ...e,
+          })),
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFieldsDetailed, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+    await service.confirm('job-1');
+    const finalUpdate = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    return { fields: createWorkItem.mock.calls.map((call) => call[1]), warnings: finalUpdate![0].data.warnings };
+  };
+
+  it("writes the file's Requirement Type over the model's classification, in the picklist's own spelling", async () => {
+    const { fields } = await confirmWith([{ tags: ['functional', 'safety'], requirementType: ' quality  of SERVICE ' }]);
+    expect(fields[0]['Microsoft.VSTS.CMMI.RequirementType']).toBe('Quality of Service');
+  });
+
+  it("does not write a file Requirement Type the picklist does not have, and says so", async () => {
+    const { fields, warnings } = await confirmWith([{ tags: ['safety'], requirementType: 'Regulatory' }]);
+    expect(fields[0]).not.toHaveProperty('Microsoft.VSTS.CMMI.RequirementType');
+    expect(warnings).toEqual([expect.objectContaining({ kind: 'classification_not_representable', nodeIds: ['n0'] })]);
+  });
+
+  it("writes the file's own tags to System.Tags, cleaned, on any type, and never the review marks", async () => {
+    const { fields } = await confirmWith([
+      { fileTags: [' customer-baseline ', 'Phase 2', 'phase 2', 'a;b,c'], derivedMarks: ['TBD', 'Should'] },
+      { type: 'Feature', fileTags: ['customer-baseline'] },
+      { derivedMarks: ['No obligation'] },
+    ]);
+    expect(fields[0]['System.Tags']).toBe('customer-baseline; Phase 2; a b c');
+    expect(fields[1]['System.Tags']).toBe('customer-baseline');
+    expect(fields[2]).not.toHaveProperty('System.Tags');
+    expect(JSON.stringify(fields)).not.toMatch(/TBD|Should|No obligation/);
+  });
+
   it('leaves the RequirementType field at its ADO default and warns when none of a Requirement\'s tags are representable', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 207 });
     const discoverFieldsDetailed = jest.fn().mockResolvedValue([
@@ -8253,5 +8316,76 @@ describe('JobsService.confirm identity v2 (W1)', () => {
     await service.confirm('job-1');
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith('v1', area, 100);
+  });
+});
+
+describe('JobsService.changeDiffEntryType', () => {
+  const epic = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+  const holder = { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Holds a requirement', description: '', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null };
+  const empty = { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: 'Holds nothing', description: '', action: 'create', existingAdoId: null, sourceHash: 'h3', customerId: null };
+  const requirement = { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Req', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h4', customerId: 'abc_1' };
+  const reused = { ...empty, localId: 'f3', action: 'reuse', existingAdoId: 77, sourceHash: 'h5' };
+
+  function makeService(dryRunDiff: unknown[], mapping: object | null = null) {
+    const stored = JSON.parse(JSON.stringify(dryRunDiff));
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: stored }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(mapping) },
+    };
+    return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+  }
+
+  it('changes a type the ladder allows there, remembers the first one, and changing back is Undo', async () => {
+    const service = makeService([epic, holder, empty, requirement]);
+    const changed = (await service.changeDiffEntryType('job-1', 'f2', 'Epic')).find((e) => e.localId === 'f2')!;
+    expect(changed).toMatchObject({ type: 'Epic', retypedFrom: 'Feature' });
+    const undone = (await service.changeDiffEntryType('job-1', 'f2', 'Feature')).find((e) => e.localId === 'f2')!;
+    expect(undone.type).toBe('Feature');
+    expect(undone).not.toHaveProperty('retypedFrom');
+  });
+
+  it('refuses a type the parent does not allow', async () => {
+    await expect(makeService([epic, holder, empty, requirement]).changeDiffEntryType('job-1', 'r1', 'Epic')).rejects.toThrow('cannot be nested under a Feature');
+    await expect(makeService([epic, holder, empty, requirement]).changeDiffEntryType('job-1', 'f2', 'Requirement')).rejects.toThrow('cannot be nested under a Epic');
+  });
+
+  it('keeps a top-level item an Epic: only Epics are roots', async () => {
+    await expect(makeService([epic]).changeDiffEntryType('job-1', 'e1', 'Feature')).rejects.toThrow('cannot be a top-level item');
+  });
+
+  it('refuses a type that cannot hold the items under it', async () => {
+    await expect(makeService([epic, holder, empty, requirement]).changeDiffEntryType('job-1', 'f1', 'Epic')).rejects.toThrow('cannot hold the Requirement');
+  });
+
+  it('refuses an existing work item, an item this job already wrote, and an unknown type', async () => {
+    await expect(makeService([epic, reused]).changeDiffEntryType('job-1', 'f3', 'Epic')).rejects.toThrow('existing work item');
+    await expect(makeService([epic, empty], { jobId: 'job-1', localId: 'f2', adoId: 9 }).changeDiffEntryType('job-1', 'f2', 'Epic')).rejects.toThrow('already written');
+    await expect(makeService([epic, empty]).changeDiffEntryType('job-1', 'f2', 'Task')).rejects.toThrow("type must be");
+  });
+});
+
+describe('JobsService.getFileReading', () => {
+  const reading = { kind: 'requirements_spec', requirements: 3, decisions: [], fixes: [{ headingId: 'b7', from: 'Enclousure', to: 'Enclosure' }] };
+  function serviceWith(job: Record<string, unknown> | null, row: Record<string, unknown> | null) {
+    const findFirst = jest.fn().mockResolvedValue(row);
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(job) }, fileRulebook: { findFirst } };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), findFirst };
+  }
+
+  it('returns the reading stored with the exact rulebook the job was built from, and the code shape it learned', async () => {
+    const { service, findFirst } = serviceWith(
+      { userId: 'u1', sourceHash: 'sha', fileRulebookHash: 'rh', fileRulebook: { document: { grammar: { requirement_codes: ['PWR-1', 'PWR-2'] } } } },
+      { details: { approximate: true, reading } },
+    );
+    await expect(service.getFileReading('job-1')).resolves.toEqual({ reading, codes: ['PWR-1', 'PWR-2'] });
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u1', fileSha256: 'sha', hash: 'rh' } }));
+  });
+
+  it('returns no reading for a job built without a rulebook, or when the stored row has none', async () => {
+    const none = serviceWith({ userId: 'u1', sourceHash: 'sha', fileRulebookHash: null, fileRulebook: null }, null);
+    await expect(none.service.getFileReading('job-1')).resolves.toEqual({ reading: null, codes: [] });
+    expect(none.findFirst).not.toHaveBeenCalled();
+    const old = serviceWith({ userId: 'u1', sourceHash: 'sha', fileRulebookHash: 'rh', fileRulebook: {} }, { details: { approximate: false } });
+    await expect(old.service.getFileReading('job-1')).resolves.toEqual({ reading: null, codes: [] });
   });
 });

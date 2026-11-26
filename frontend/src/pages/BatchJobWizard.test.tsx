@@ -113,7 +113,7 @@ describe('BatchJobWizard', () => {
     renderWizard();
 
     await userEvent.upload(screen.getByLabelText(/upload requirements documents/i), new File(['a'], 'a.docx'));
-    await userEvent.click(screen.getByText(/survey/i));
+    await userEvent.click(screen.getByText('With AI review'));
 
     expect(screen.getByText(/1 file selected/i)).toBeInTheDocument();
   });
@@ -142,14 +142,14 @@ describe('BatchJobWizard', () => {
       renderWithAwayRoute();
       await userEvent.upload(screen.getByLabelText(/upload requirements documents/i), [new File(['a'], 'a.docx'), new File(['b'], 'b.docx')]);
       await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-      await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
+      await userEvent.click(screen.getByRole('radio', { name: /^With AI review/ }));
 
       await goAwayAndBack();
 
       expect(screen.getByText('a.docx')).toBeInTheDocument();
       expect(screen.getByText('b.docx')).toBeInTheDocument();
       expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
-      expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+      expect(screen.getByRole('radio', { name: /^With AI review/ })).toBeChecked();
       expect(screen.getByRole('button', { name: /start batch/i })).not.toBeDisabled();
     });
 
@@ -226,14 +226,14 @@ describe('BatchJobWizard setup the way the single wizard does it', () => {
     localStorage.setItem('req2ado-last-job:user-7', JSON.stringify({ mode: 'survey', project: 'Proj', areaPath: 'Proj\\Customer Requirements' }));
     useBatchJobDraftStore.getState().reset();
     renderAs('user-7');
-    expect(screen.getByRole('radio', { name: /survey/i })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /baseline/i })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: /With AI review/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Standard/i })).not.toBeChecked();
   });
 
   it('never replaces a draft the user already started with the remembered choices', () => {
     localStorage.setItem('req2ado-last-job:user-7', JSON.stringify({ mode: 'survey', project: 'Proj', areaPath: 'Proj\\A' }));
     renderAs('user-7', { mode: 'baseline', project: 'Other', areaPath: 'Other\\B' });
-    expect(screen.getByRole('radio', { name: /baseline/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Standard/i })).toBeChecked();
   });
 
   it('says why Start is unavailable, beside the button, and follows what is still missing', async () => {
@@ -421,7 +421,7 @@ describe('BatchJobWizard: checks each file before the batch starts (B3)', () => 
     expect(vi.mocked(jobsApi.getEstimate).mock.calls.filter(([p]) => p.mode === 'baseline')).toHaveLength(2);
     expect(vi.mocked(jobsApi.getEstimate)).toHaveBeenCalledWith(expect.objectContaining({ blockCount: 42, mode: 'baseline' }));
 
-    await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /^With AI review/ }));
     await waitFor(() => expect(rowOf('a.docx')).toHaveTextContent('50 min – 1h 10m'));
     expect(screen.getByTestId('batch-total-estimate')).toHaveTextContent('1h 50m – 2h 40m');
     // The SURVEY throttle note stays beside the total.
@@ -467,18 +467,18 @@ describe('BatchJobWizard: remembers the last choice per Team Project (B6)', () =
     await pickProject('Alpha');
 
     expect(await screen.findByLabelText(/area path/i)).toHaveValue('Alpha\\Reqs');
-    expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^With AI review/ })).toBeChecked();
   });
 
   it('never replaces a mode the user already chose', async () => {
     localStorage.setItem('req2ado-last-job-by-project:user-7', JSON.stringify({ Alpha: { mode: 'baseline', areaPath: 'Alpha\\Reqs' } }));
     renderSignedIn();
-    await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /^With AI review/ }));
 
     await pickProject('Alpha');
 
     expect(await screen.findByLabelText(/area path/i)).toHaveValue('Alpha\\Reqs');
-    expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^With AI review/ })).toBeChecked();
   });
 
   it('remembers the batch\'s choices under its project when it starts', async () => {

@@ -90,7 +90,7 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
       maxWidthClassName="max-w-[560px]"
       maxHeightClassName="max-h-[calc(100dvh-2rem)]"
       title={`Add ${eligible.length} ${plural(eligible.length, 'file', 'files')} to the knowledge base`}
-      description="Choose how your survey jobs should use these documents. They are added in the background, one after another, so you can leave this page."
+      description="Choose how your With AI review jobs should use these documents. They are added in the background, one after another, so you can leave this page."
       footer={
         <>
           <span className="ml-auto" />

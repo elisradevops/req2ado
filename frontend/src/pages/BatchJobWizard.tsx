@@ -390,7 +390,7 @@ export function BatchJobWizard(): React.ReactElement {
           )}
           {mode === 'survey' && (
             <Alert severity="warning">
-              This deployment runs at most {plural(SURVEY_BATCH_THROTTLE_HINT, 'SURVEY file')} from a batch at a time. With {plural(files.length, 'file')} selected, some will wait in queue while earlier ones finish.
+              This deployment runs at most {plural(SURVEY_BATCH_THROTTLE_HINT, 'With AI review file')} from a batch at a time. With {plural(files.length, 'file')} selected, some will wait in queue while earlier ones finish.
             </Alert>
           )}
           <div className="flex flex-wrap items-center gap-3">

@@ -58,19 +58,43 @@ def _holders(tree, text: str):
     return [n for n in _requirements(tree) if key in _norm(n.title + " " + n.description)]
 
 
+def _number(node) -> str:
+    """The section number of the heading an item was built from (its clean title no longer carries it)."""
+    return _norm(node.source_title or node.title).split(" ", 1)[0]
+
+
 def _section_of(tree, node) -> str | None:
     by_id = {n.local_id: n for n in tree.nodes}
     parent = by_id.get(node.parent_local_id or "")
-    return _norm(parent.title).split(" ", 1)[0] if parent else None
+    return _number(parent) if parent else None
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_one_epic_named_by_the_cover_title(mode: str, tmp_root: str) -> None:
-    truth, trees, _ = _built(tmp_root)
-    epics = [n for n in trees[mode].nodes if n.type.value == "Epic"]
-    assert len(epics) == 1, [e.title for e in epics]
-    assert truth.epic_title_contains.lower() in _norm(epics[0].title)
-    assert all(n.parent_local_id for n in trees[mode].nodes if n.type.value != "Epic")
+def test_one_root_epic_the_chapter_that_holds_the_requirements(mode: str, tmp_root: str) -> None:
+    """The ladder (owner decision, 2026-11-25): the requirements chapter is the one root Epic, its areas made of sections are Epics under
+    it, and only Epics are roots. Its generic name is the file's own until the user accepts a rename (next test)."""
+    _truth, trees, _ = _built(tmp_root)
+    roots = [n for n in trees[mode].nodes if n.parent_local_id is None]
+    assert [(r.type.value, r.title, _number(r)) for r in roots] == [("Epic", "Requirements", "2")]
+
+
+def test_an_accepted_rename_names_the_root_after_the_cover(tmp_root: str) -> None:
+    from app.study.model_rules import document_headings
+    from app.study.rulebook import DocumentRules, FileRulebook, Proposal
+
+    truth, _trees, path = _built(tmp_root)
+    doc = load_pdf(str(path))
+    block_id = next(h["block_id"] for h in document_headings(doc) if h["number"] == "2")
+    rename = Proposal(block_id, "rename", "Greenhouse Climate Controller (GCC)", "Named after the cover.")
+    codes = ("gen_2", "enc_1", "mec_3")
+    undecided = FileRulebook(document=DocumentRules(requirement_codes=codes, proposals=(rename,)))
+    accepted = FileRulebook(document=DocumentRules(requirement_codes=codes, proposals=(rename,), proposal_decisions=((block_id, "accept"),)))
+
+    def root(rulebook) -> str:
+        return next(n.title for n in build_baseline_tree(doc, rulebook).nodes if n.parent_local_id is None)
+
+    assert root(undecided) == "Requirements"
+    assert truth.epic_title_contains.lower() in _norm(root(accepted))
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -157,9 +181,14 @@ def test_context_and_empty_sections_are_never_requirements(mode: str, tmp_root: 
 @pytest.mark.parametrize("mode", MODES)
 def test_every_requirement_section_is_a_feature(mode: str, tmp_root: str) -> None:
     truth, trees, _ = _built(tmp_root)
-    features = {_norm(n.title).split(" ", 1)[0] for n in trees[mode].nodes if n.type.value == "Feature"}
-    missing = [s.number for s in truth.sections if s.kind in ("feature", "empty") and s.number not in features]
-    assert not missing, f"{mode}: sections with no Feature: {missing}"
+    nodes = trees[mode].nodes
+    features = {_number(n) for n in nodes if n.type.value == "Feature"}
+    items = {_number(n) for n in nodes}
+    # A section that holds requirements (or is empty) is a Feature; a section made only of sections is an item too (an Epic, or a
+    # Feature under a Feature): the ladder, owner decision 2026-11-25.
+    missing = [s.number for s in truth.sections if (s.reqs or s.kind == "empty") and s.number not in features]
+    lost = [s.number for s in truth.sections if s.kind == "feature" and s.number not in items]
+    assert not missing and not lost, f"{mode}: sections with no Feature: {missing}; sections with no item: {lost}"
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -216,7 +245,9 @@ def test_the_trace_is_set_apart_from_the_requirement_text_by_a_blank_line(mode: 
     _truth, trees, _ = _built(tmp_root)
     by_id = {n.customer_id: n for n in trees[mode].nodes if n.customer_id}
     statement, trace = by_id["mnt_13"].description.split("\n\n")
-    assert statement.startswith("mnt_13 The housing material") and "Note: The agents are applied" in statement
+    # The code is the Customer ID, not part of the description (owner decision, 2026-11-25).
+    assert statement.startswith("The housing material") and "Note: The agents are applied" in statement
+    assert "mnt_13" not in by_id["mnt_13"].description
     assert trace.startswith(TRACE_LABEL) and "CLIMAT_118" in trace and "SYS_28.3" in trace
     assert "\n\n" in by_id["sup_6"].description  # a trace split by a page break is still one trace, after the blank line
     assert by_id["sup_6"].description.split("\n\n")[1].split() == ["Satisfies:", "GCS_9", "SYS_45"]

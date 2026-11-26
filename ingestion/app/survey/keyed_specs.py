@@ -16,6 +16,16 @@ from app.survey.keyed_calls import KeyedSpec
 
 _TAG_ARRAY = {"type": "array", "items": {"type": "string", "enum": _TAGS}}
 
+# requirement_titles (app.leveling.requirement_titles): a short title per requirement a document's grammar built, nothing else -- no tags,
+# so a model never sets a requirement type the file did not state.
+REQUIREMENT_TITLES_SPEC = KeyedSpec(
+    name="requirement_titles",
+    schema_name="requirement_titles_by_id",
+    fields={"title": {"type": "string"}},
+    field_prompts={"title": "'title' (string)"},
+    id_noun="requirement id",
+)
+
 TITLE_TAGS_SPEC = KeyedSpec(
     name="title_tag",
     schema_name="title_tags_by_row",

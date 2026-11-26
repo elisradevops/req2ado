@@ -159,14 +159,10 @@ interface Props {
   /** Set when the job will use another model than the one that read the file: both named, with an offer to read again with the job's. */
   modelHint?: { readWith: string; jobUses: string } | null;
   onRelearn: () => void;
-  /** Stops waiting for the reading (the job reads the file itself when it starts). */
-  onStopWaiting: () => void;
-  /** After stopping: reads the file now after all. */
-  onReadNow: () => void;
   /** Saves an edit. Resolves to null when the file accepted it, or to the reason it did not (shown here, the edit stays open). */
   onSaveEdit: (rulebook: Record<string, unknown>) => Promise<string | null>;
   /** Inside the wizard's one "This file and how it will be read" card: only how items are built, no card, intro or waiting of its own (the
-   *  outer card has the one status line, timer and "Stop waiting"). */
+   *  outer card has the one status line and timer). */
   embedded?: boolean;
 }
 
@@ -180,7 +176,7 @@ export function modelUnreachable(view: RulebookView | null): boolean {
  * a type), every answer is checked against the whole file, and only code builds the items from it. The reviewer sees the rules in words, can read them
  * again or correct how a type is mapped, and the job is built from exactly what is shown here.
  */
-export function FileRulesCard({ status, view, error, modelLabel, startedAt, modelHint, onRelearn, onStopWaiting, onReadNow, onSaveEdit, embedded }: Props): React.ReactElement | null {
+export function FileRulesCard({ status, view, error, modelLabel, startedAt, modelHint, onRelearn, onSaveEdit, embedded }: Props): React.ReactElement | null {
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState<Edits>({ types: {}, labels: {} });
   const [saving, setSaving] = useState(false);
@@ -367,20 +363,6 @@ export function FileRulesCard({ status, view, error, modelLabel, startedAt, mode
                 <ElapsedTimer startedAt={startedAt} /> so far
               </span>
             )}
-            <Button size="sm" variant="outline" onClick={onStopWaiting}>
-              Stop waiting
-            </Button>
-          </div>
-        )}
-
-        {status === 'cancelled' && (
-          <div className="flex flex-col gap-2" data-testid="file-rules-cancelled">
-            <p className="text-sm text-ink-2">Stopped waiting. The job will read the file's layout when it starts, which adds time to the job.</p>
-            <div>
-              <Button variant="outline" onClick={onReadNow}>
-                Read now instead
-              </Button>
-            </div>
           </div>
         )}
 

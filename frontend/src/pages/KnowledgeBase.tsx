@@ -745,7 +745,7 @@ export function KnowledgeBase(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Knowledge base" description="Your reference documents. SURVEY jobs you start use them for context. Other users do not see them." />
+      <PageHeader title="Knowledge base" description="Your reference documents. With AI review jobs you start use them for context. Other users do not see them." />
       <KbIngestedList refreshKey={kbListVersion} />
       <KbSourceBar
         sourceUrl={sourceUrl}
@@ -926,7 +926,7 @@ export function KnowledgeBase(): React.ReactElement {
             <strong>
               <bdi dir="auto">{documentPendingRemoval?.name}</bdi>
             </strong>{' '}
-            will no longer be judged against or cited by SURVEY jobs. This deletes its
+            will no longer be judged against or cited by With AI review jobs. This deletes its
             stored content and cannot be undone — add it again from the tree if you need it back.
           </>
         }

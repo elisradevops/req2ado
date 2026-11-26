@@ -114,6 +114,7 @@ export function NodeDetailPanel({
   evidenceSlot,
   sourceSlot,
   moveSlot,
+  parentSlot,
   duplicateSlot,
   captionByFigureId,
   nameByFigureId,
@@ -194,6 +195,8 @@ export function NodeDetailPanel({
   // editability message -- visible without scrolling, the same reasoning
   // addChildSlot's own doc comment gives for not burying it at the bottom.
   moveSlot?: React.ReactNode;
+  // An Epic's or Feature's own sections (its decision, what is under it), in place of the one-line coverage sentence.
+  parentSlot?: React.ReactNode;
   // The "already exists" card for a skipped near-duplicate (or one created anyway), built by the caller for the same reason moveSlot is.
   duplicateSlot?: React.ReactNode;
   onSave?: (
@@ -895,10 +898,17 @@ export function NodeDetailPanel({
 
   const proposedBody = (
     <>
-      {!echoesTitle && (
-        <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
-          <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
-        </div>
+      {/* An Epic or Feature takes the file's own text, else nothing (owner decision, 2026-11-25): say so rather than show a blank. */}
+      {isParentEntry && !entry.description.trim() ? (
+        <p className="text-sm text-ink-3" data-testid="empty-description">
+          Empty. The file has no text of its own for this {entry.type}, so no description is written.
+        </p>
+      ) : (
+        !echoesTitle && (
+          <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+            <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
+          </div>
+        )
       )}
         <ProposalCard
           key={entry.localId}
@@ -1162,6 +1172,34 @@ export function NodeDetailPanel({
           <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}
+      {/* What the file itself states (the approved mockup, 2026-11-25): a Requirement's type, the file's tags (both written), and the words
+          found in the text (TBD, Should...), which are for filtering only and never written. */}
+      {(entry.type === 'Requirement' || (entry.fileTags?.length ?? 0) > 0 || (entry.derivedMarks?.length ?? 0) > 0) && (
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm" data-testid="file-details">
+          {entry.type === 'Requirement' && (
+            <>
+              <dt className="text-ink-3">Requirement type</dt>
+              <dd className={entry.requirementType ? 'text-ink-1' : 'text-ink-3'}>{entry.requirementType || 'Not stated in the file'}</dd>
+            </>
+          )}
+          {entry.fileTags && entry.fileTags.length > 0 && (
+            <>
+              <dt className="text-ink-3">Tags from the file</dt>
+              <dd dir="auto" className="text-ink-1">
+                {entry.fileTags.join(', ')}
+              </dd>
+            </>
+          )}
+          {entry.derivedMarks && entry.derivedMarks.length > 0 && (
+            <>
+              <dt className="text-ink-3">Marked in the text</dt>
+              <dd className="text-ink-1">
+                {entry.derivedMarks.join(' · ')} <span className="text-xs text-ink-3">(for filtering, not written)</span>
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
       {!foldQuality && showQualityPanel && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           {entry.qualityScore != null ? (
@@ -1178,7 +1216,7 @@ export function NodeDetailPanel({
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,
           rather than leaving this slot silently empty. */}
-      {isParentEntry && <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>}
+      {isParentEntry && (parentSlot ?? <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>)}
       {moveSlot}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
         <div className="mt-1">

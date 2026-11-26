@@ -125,7 +125,9 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
             </RadixToast.Root>
           );
         })}
-        <RadixToast.Viewport className="fixed bottom-4 right-4 z-[100] flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 outline-none" />
+        {/* Above a bar docked to the bottom of the screen (the review's Write bar, the new job's Start bar: `data-dock`), so a toast never covers
+            the button it may be reporting on. The bar is about 80 px high on a wide screen and up to 150 px on a phone, where it stacks. */}
+        <RadixToast.Viewport className="fixed bottom-4 right-4 z-[100] flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 outline-none [body:has([data-dock])_&]:bottom-28 max-md:[body:has([data-dock])_&]:bottom-44" />
       </RadixToast.Provider>
       <ErrorDetailsDialog details={detailsOpenFor} onClose={() => setDetailsOpenFor(null)} />
     </ToastContext.Provider>

@@ -239,6 +239,11 @@ def normalize_keyed_result(
     entries = _normalize_shapes(result, requested_ids)
     if fields is None:
         return entries
+    # A pass with one answer field, answered with the text itself instead of an object holding it ({"r1": "Short title"}): there is no doubt
+    # which field it is, so it counts. Seen live: a local model answered every requirement this way and every answer was dropped.
+    if len(fields) == 1:
+        (only,) = tuple(fields)
+        entries = {key: ({only: value} if isinstance(value, str) and value.strip() else value) for key, value in entries.items()}
     # An entry that carries none of the contract's fields is not an answer: a response cut off by the
     # token limit is repaired by the JSON reader into `{"id": "x"}` for the element it stopped in, which
     # would otherwise count as "returned" and never be asked again.

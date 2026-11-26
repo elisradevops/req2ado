@@ -87,6 +87,22 @@ export interface WorkItemNode {
     | 'behavior'
   )[];
   /**
+   * Tags the file itself states for this item (an ADO-export Tags column). Written to System.Tags. Never derived or invented.
+   */
+  file_tags?: string[];
+  /**
+   * The Requirement Type the file itself states for this Requirement. It wins over any model-proposed type; null when the file states none.
+   */
+  requirement_type?: string | null;
+  /**
+   * Review marks read from a Requirement's own text, for filtering in the review. Never written to Azure DevOps.
+   */
+  derived_marks?: ('TBD' | 'Should' | 'Will' | 'No obligation')[];
+  /**
+   * With AI review's suggested wording for this item. Offered to the reviewer, never applied by itself; null when there is none.
+   */
+  description_suggestion?: string | null;
+  /**
    * Ids of figures folded into/relevant to this node -- populated by all 4 node-building paths (BASELINE, deterministic heading/ID-tree, deterministic span-fold, SURVEY's LLM branch), not SURVEY-only. For SURVEY this is the LLM's own judged-relevant subset (see llm_leveling.render_section's figure id injection); for the deterministic paths it's every figure whose block folded into this node's span, no LLM judgment involved.
    */
   figure_ids?: string[];

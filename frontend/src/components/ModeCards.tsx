@@ -26,27 +26,16 @@ import type { EtaEstimate, ModelDetail } from '../api/jobs';
 // (verbatim clause vs. a titled, rewritten item), in placeholders only: a
 // realistic clause, section number, unit or score would be read as real
 // output (DESIGN.md §11.2.5).
+// The two modes as the owner named them (2026-11-25): both read the file with AI; With AI review also scores, writes acceptance criteria and
+// suggests wording, which the reviewer accepts or not.
 export const MODE_COPY = {
   baseline: {
-    title: 'BASELINE',
-    description: 'Deterministic, verbatim extraction. No AI rewriting. Fast.',
-    // Not "no model cost": the pre-study (a model reading the file's layout) runs in both modes.
-    costNote: 'items are built by code; a short model read of the file’s layout runs first (once per file, then reused)',
-    sample: {
-      kind: 'verbatim' as const,
-      text: '1.1 The system shall <requirement text, copied word for word>.',
-    },
+    title: 'Standard',
+    description: "The file's own structure and text, with clean titles.",
   },
   survey: {
-    title: 'SURVEY',
-    description: 'An AI model rewrites the text into formal "shall" requirements.',
-    costNote: 'uses your model quota, plus the same short read of the file’s layout first',
-    sample: {
-      kind: 'structured' as const,
-      title: '<short title>',
-      body: 'The system shall <the requirement, rewritten as a clear "shall" statement>.',
-      provenance: 'from §<section>',
-    },
+    title: 'With AI review',
+    description: 'The same items, plus scoring, acceptance criteria and wording suggestions.',
   },
 } as const;
 
@@ -75,27 +64,6 @@ function EstimateLine({ estimate, cached }: { estimate: EtaEstimate | undefined;
     <>
       <span className="font-mono text-meta text-ink-3">{lower === upper ? lower : `${lower} – ${upper}, typically`}</span>
     </>
-  );
-}
-
-function SamplePreview({ sample }: { sample: (typeof MODE_COPY)['baseline' | 'survey']['sample'] }): React.ReactElement {
-  return (
-    <span className="block overflow-hidden rounded-sm border border-hairline bg-surface-alt">
-      <span className={cn('block px-2.5 pt-2 pb-1', LABEL_MICRO)}>
-        Example of what lands in Azure DevOps
-      </span>
-      <span className="block px-2.5 pt-0.5 pb-2.5">
-        {sample.kind === 'verbatim' ? (
-          <span className="block font-mono text-meta leading-snug text-ink-2">{sample.text}</span>
-        ) : (
-          <>
-            <span className="block text-xs font-semibold text-ink-1">{sample.title}</span>
-            <span className="mt-0.5 block text-meta leading-snug text-ink-2">{sample.body}</span>
-            <span className="mt-1 block font-mono text-micro text-ink-3">{sample.provenance}</span>
-          </>
-        )}
-      </span>
-    </span>
   );
 }
 
@@ -147,106 +115,69 @@ export function ModeCards({
   const shownModelId = model || recommendedModel || '';
   const shownDetail = shownModelId ? modelDetails?.find((d) => d.id === shownModelId) : undefined;
   return (
-    // Stacked (not side-by-side) -- matches the prototype's `.modes` grid
-    // (single column, no grid-template-columns) rather than the previous
-    // flex-row layout. Reads better at the narrower width this now sits in
-    // once the wizard's step 2 uses a real two-column split.
-    <div className="flex flex-col gap-2.5" role="radiogroup" aria-label="Analysis mode">
-      {(Object.keys(MODE_COPY) as Array<'baseline' | 'survey'>).map((mode) => {
-        const selected = value === mode;
-        const estimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
-        return (
-          // A plain div, not a <button> -- the SURVEY card needs to nest a
-          // real interactive <Select> (Radix renders its own trigger
-          // <button>), and a <button> inside a <button> is invalid HTML
-          // (confirmed real bug when this exact pattern was first tried on
-          // QualityGauge's CategoryRow/InfoTip nesting, earlier in this
-          // session). tabIndex/onKeyDown restore the same keyboard
-          // activation a native button would give for free, matching this
-          // codebase's own div-role-button convention (FileDropzone.tsx).
-          <div
-            key={mode}
-            role="radio"
-            tabIndex={0}
-            aria-checked={selected}
-            onClick={() => onChange(mode)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onChange(mode);
-              }
-            }}
-            className={cn(
-              // DESIGN.md §7 Surface category, Selected row: border-accent
-              // bg-accent-soft shadow-raised + a 3px accent left rail.
-              // `.liftable` (§6) supplies the shared hover lift/shadow every
-              // other Surface-category element already uses -- the
-              // accent-soft border tint on hover stays its own utility
-              // since `.liftable` only owns elevation, not border color.
-              'liftable relative flex cursor-pointer flex-col gap-2 rounded-md border bg-surface px-3.5 py-3 text-left transition-colors duration-instant ease-out',
-              selected ? 'border-accent bg-accent-soft shadow-raised' : 'border-hairline-strong hover:border-accent-soft-border',
-            )}
-          >
-            {selected && <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-md bg-accent" />}
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  'grid h-3.5 w-3.5 flex-none place-items-center rounded-full border',
-                  selected ? 'border-accent' : 'border-hairline-strong',
-                )}
-              >
-                {selected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
-              </span>
-              <span className="text-sm font-bold">{MODE_COPY[mode].title}</span>
-              {lastUsed === mode && <span className={cn('ml-auto', LABEL_MICRO)}>Last used</span>}
-            </div>
-            <span className="text-xs text-ink-3">{MODE_COPY[mode].description}</span>
-            <SamplePreview sample={MODE_COPY[mode].sample} />
-            <span className="flex items-center gap-1.5">
-              <EstimateLine estimate={estimate} cached={mode === 'survey' && surveyCached} />
-              <span className="text-meta text-ink-3">· {MODE_COPY[mode].costNote}</span>
-            </span>
-            {mode === 'survey' && onModelChange && (
-              // Both stopPropagation calls are load-bearing, not just the
-              // click one -- this control lives inside the card's own
-              // onClick/onKeyDown (select-this-mode) surface, and Radix's
-              // real SelectTrigger only ever calls preventDefault() on
-              // Enter/Space/arrow keys, never stopPropagation() (confirmed
-              // against @radix-ui/react-select's own source) -- preventDefault
-              // does not stop a React synthetic event from continuing to
-              // bubble. Without the onKeyDown guard here too, pressing
-              // Enter/Space to open the dropdown bubbles straight up to the
-              // ancestor role="radio" div's own onKeyDown and silently
-              // switches the selected mode -- a real state change, not a
-              // harmless stray call like the click case.
-              <span
-                className="flex flex-wrap items-center gap-1.5 border-t border-hairline pt-2"
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => event.stopPropagation()}
-              >
-                <span className="flex flex-none items-center gap-1 text-xs font-medium text-ink-2">
-                  <Cpu className="h-3.5 w-3.5 flex-none text-ink-3" />
-                  Model
+    // Side by side and compact (the approved mockup): the name, the time, one line. The model the AI review uses sits in the row under them,
+    // beside the line both modes share, so the Standard card is never a tall empty box.
+    <div className="flex flex-col gap-2.5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2" role="radiogroup" aria-label="Analysis mode">
+        {(Object.keys(MODE_COPY) as Array<'baseline' | 'survey'>).map((mode) => {
+          const selected = value === mode;
+          const estimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
+          return (
+            <div
+              key={mode}
+              role="radio"
+              tabIndex={0}
+              aria-checked={selected}
+              onClick={() => onChange(mode)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onChange(mode);
+                }
+              }}
+              className={cn(
+                // DESIGN.md §7 Surface category, Selected row; `.liftable` (§6) supplies the shared hover lift.
+                'liftable relative flex cursor-pointer flex-col gap-1.5 rounded-md border bg-surface px-3.5 py-3 text-left transition-colors duration-instant ease-out',
+                selected ? 'border-accent bg-accent-soft shadow-raised' : 'border-hairline-strong hover:border-accent-soft-border',
+              )}
+            >
+              {selected && <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-md bg-accent" />}
+              <div className="flex items-center gap-2">
+                <span className={cn('grid h-3.5 w-3.5 flex-none place-items-center rounded-full border', selected ? 'border-accent' : 'border-hairline-strong')}>
+                  {selected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
                 </span>
-                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="AI model" loading={modelsLoading}>
-                  <option value="">{recommendedModel ? `Default (${recommendedModel})` : 'Default'}</option>
-                  {(availableModels ?? []).map((m) => (
-                    <option key={m} value={m}>
-                      {m === recommendedModel ? `${m} · Recommended` : m}
-                    </option>
-                  ))}
-                </Select>
-                {modelsError && (
-                  <span className="basis-full text-micro text-danger">Couldn't load models — Default will be used.</span>
-                )}
-                {shownDetail && (
-                  <span className="basis-full text-meta text-ink-3">{describeModelFacts(shownDetail).join(' · ')}</span>
-                )}
-              </span>
-            )}
+                <span className="text-sm font-bold">{MODE_COPY[mode].title}</span>
+                {lastUsed === mode && <span className={cn('ml-2', LABEL_MICRO)}>Last used</span>}
+                <span className="ml-auto flex items-center gap-1.5">
+                  <EstimateLine estimate={estimate} cached={mode === 'survey' && surveyCached} />
+                </span>
+              </div>
+              <span className="pl-6 text-xs text-ink-3">{MODE_COPY[mode].description}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2 md:gap-3">
+        <p className="text-xs text-ink-3">Both modes use AI to read the file.</p>
+        {value === 'survey' && onModelChange && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="flex flex-none items-center gap-1 text-xs font-medium text-ink-2">
+              <Cpu className="h-3.5 w-3.5 flex-none text-ink-3" />
+              Model
+            </span>
+            <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="AI model" loading={modelsLoading}>
+              <option value="">{recommendedModel ? `Default (${recommendedModel})` : 'Default'}</option>
+              {(availableModels ?? []).map((m) => (
+                <option key={m} value={m}>
+                  {m === recommendedModel ? `${m} · Recommended` : m}
+                </option>
+              ))}
+            </Select>
+            {modelsError && <span className="basis-full text-micro text-danger">Couldn't load models — Default will be used.</span>}
+            {shownDetail && <span className="basis-full text-meta text-ink-3">{describeModelFacts(shownDetail).join(' · ')}</span>}
           </div>
-        );
-      })}
+        )}
+      </div>
     </div>
   );
 }

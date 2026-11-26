@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
+from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.vector_store import ChromaVectorStore
 
 client = TestClient(main.app)
@@ -785,7 +786,7 @@ def test_dedup_upsert_batch_embeds_in_chunks_keeping_order_and_alignment(
     assert [entry[0] for entry in stored] == [f"item-{i}" for i in range(300)]
     for i, (item_id, embedding, text) in enumerate(stored):
         assert text == f"text-{i}"
-        assert embedding == main.blend_embeddings([float(i), 1.0, 1.0], [float(i), 2.0, 1.0])
+        assert embedding == blend_embeddings([float(i), 1.0, 1.0], [float(i), 2.0, 1.0])
 
 
 def test_dedup_upsert_batch_failing_chunk_keeps_earlier_chunks_indexed(
